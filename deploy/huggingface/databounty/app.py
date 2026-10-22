@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""DataBounty on Hugging Face: a read-only window onto DataBounty's community programme.
+"""DataBounty on Hugging Face: DataBounty's community programme, and a place to contribute to it.
 
-Every tab renders live public data from databounty.io's API (see databounty.py).
-The `gr.api` endpoints at the bottom are this Space's programmatic surface;
-launched with `mcp_server=True`, each one is also an MCP tool described by its
-docstring. UI handlers are registered with `api_visibility="private"` so they do
-not show up as duplicate, UI-shaped tools next to them.
+The browsing tabs render live public data from databounty.io's API (see databounty.py).
+The Contribute tab signs a person in to DataBounty and adds items as them (see
+contribute.py and account.py). The `gr.api` endpoints at the bottom are this Space's
+public programmatic surface; served with `mcp_server=True`, each one is also an MCP
+tool described by its docstring. UI handlers are registered with
+`api_visibility="private"` so they do not show up as duplicate, UI-shaped tools.
 """
 
 from __future__ import annotations
@@ -17,8 +18,14 @@ from pathlib import Path
 from typing import Any
 
 import gradio as gr
+import httpx
 import pandas as pd
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+import account
+import contribute
 import databounty as db
 
 HERE = Path(__file__).parent
@@ -109,7 +116,7 @@ HOW_IT_WORKS = f"""
 ### How DataBounty works
 
 1. **A sponsor requests a dataset.** An operator reviews the request and opens a **pool**: a field contract, a target size, a licence and the karma paid per accepted item.
-2. **Contributors submit items** from the dashboard, or through an AI agent connected over MCP.
+2. **Contributors submit items** from the dashboard, from this Space's **Contribute** tab, or through an AI agent connected over MCP.
 3. **Automated checks run on every item**: exact and near-duplicate detection, an AI-attribution scan and, where the dataset type has tests, sandboxed execution.
 4. **Human validators review the work.** Contributors earn karma only for accepted items; validators earn karma for their audits.
 5. **Finished datasets are published to the Hub** under [{db.HF_ORG}](https://huggingface.co/{db.HF_ORG}), with contributor credit in the dataset card and a `manifest.json`.
@@ -535,9 +542,10 @@ HEADER = f"""
 """
 
 FOOTER = (
-    f"Read-only: this Space reads DataBounty's public API and stores nothing about visitors. "
-    f"Figures refresh every {int(db.CACHE_TTL_SECONDS // 60) or 1} minutes or so. "
-    f"Contributing, validating and requesting datasets happen on [databounty.io]({db.SITE_URL})."
+    f"Browsing is anonymous: the tabs read DataBounty's public API, refreshed every "
+    f"{int(db.CACHE_TTL_SECONDS // 60) or 1} minutes or so. If you sign in to contribute, your DataBounty "
+    f"tokens stay in this Space's memory only, never on disk, and signing out revokes them. Validating and "
+    f"requesting datasets happen on [databounty.io]({db.SITE_URL})."
 )
 
 CSS = f"""
@@ -570,14 +578,18 @@ THEME = gr.themes.Citrus(
     font_mono=[gr.themes.GoogleFont("JetBrains Mono"), "ui-monospace", "monospace"],
 )
 
-with gr.Blocks(title="DataBounty") as demo:
+# Uploaded files can contain someone's work in progress: clear them out hourly.
+with gr.Blocks(title="DataBounty", delete_cache=(3600, 3600)) as demo:
     with gr.Column(elem_id="col-container"):
         gr.HTML(HEADER)
 
-        with gr.Tabs():
+        with gr.Tabs() as tabs:
             with gr.Tab("Overview", id="overview"):
                 overview = gr.HTML('<div class="db-k">Loading live totals…</div>')
                 gr.Markdown(HOW_IT_WORKS)
+
+            with gr.Tab("Contribute", id="contribute"):
+                contribute_outputs = contribute.build()
 
             with gr.Tab("Open pools", id="pools"):
                 with gr.Row(equal_height=True):
@@ -692,6 +704,8 @@ with gr.Blocks(title="DataBounty") as demo:
     demo.load(render_datasets, None, [datasets_table, datasets_snippet], api_visibility="private")
     demo.load(render_leaderboard, board_inputs, board_table, api_visibility="private")
     demo.load(render_tools, None, tools_table, api_visibility="private")
+    demo.load(contribute.account_view, None, contribute_outputs, api_visibility="private")
+    demo.load(contribute.select_tab, None, tabs, api_visibility="private")
 
     gr.api(get_platform_stats, api_name="get_platform_stats")
     gr.api(search_open_pools, api_name="search_open_pools")
@@ -704,5 +718,90 @@ with gr.Blocks(title="DataBounty") as demo:
 # visitors through at once instead of Gradio's default of one per event.
 demo.queue(default_concurrency_limit=8)
 
+# --- Sign-in routes ------------------------------------------------------------------------------
+# Plain routes beside the Gradio app: DataBounty fetches the client document and
+# redirects the browser to the callback, and neither may go through Gradio.
+
+server = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+NO_STORE = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+
+
+def _sign_in_page(message: str, status: int) -> HTMLResponse:
+    body = (
+        '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+        "<title>DataBounty sign-in</title>"
+        '<body style="font-family:system-ui,sans-serif;max-width:34rem;margin:15vh auto;padding:0 1rem;line-height:1.5">'
+        f"<h1 style=\"font-size:1.3rem\">Sign-in didn't finish</h1><p>{_e(message)}</p>"
+        '<p><a href="/?tab=contribute">Back to the Space</a></p></body>'
+    )
+    return HTMLResponse(body, status_code=status, headers=NO_STORE)
+
+
+@server.get("/oauth/client-metadata.json")
+def oauth_client_metadata() -> JSONResponse:
+    # DataBounty reads this to learn the Space's name and where it may send people back to.
+    return JSONResponse(account.client_metadata(), headers={"Cache-Control": "public, max-age=300"})
+
+
+@server.get("/oauth/start")
+def oauth_start():
+    try:
+        url, login_cookie = account.begin_sign_in()
+    except (account.SignInError, httpx.HTTPError, ValueError):
+        return _sign_in_page("DataBounty's sign-in service didn't answer. Try again in a minute.", 503)
+    response = RedirectResponse(url, status_code=302, headers=NO_STORE)
+    response.set_cookie(
+        account.LOGIN_COOKIE,
+        login_cookie,
+        max_age=account.LOGIN_TTL_SECONDS,
+        path="/oauth",
+        httponly=True,
+        secure=account.COOKIE_SECURE,
+        samesite="lax",
+    )
+    return response
+
+
+@server.get("/oauth/callback")
+def oauth_callback(request: Request):
+    try:
+        session_id = account.complete_sign_in(dict(request.query_params), request.cookies.get(account.LOGIN_COOKIE))
+    except account.SignInError as exc:
+        response = _sign_in_page(str(exc), 400)
+    except (httpx.HTTPError, ValueError):
+        response = _sign_in_page("DataBounty's sign-in service didn't answer. Start again from the Space.", 503)
+    else:
+        response = RedirectResponse("/?tab=contribute", status_code=302, headers=NO_STORE)
+        response.set_cookie(
+            account.SESSION_COOKIE,
+            session_id,
+            max_age=account.SESSION_IDLE_SECONDS,
+            path="/",
+            httponly=True,
+            secure=account.COOKIE_SECURE,
+            samesite="lax",
+        )
+    response.delete_cookie(account.LOGIN_COOKIE, path="/oauth")
+    return response
+
+
+app = gr.mount_gradio_app(
+    server,
+    demo,
+    path="/",
+    mcp_server=True,
+    theme=THEME,
+    css=CSS,
+    favicon_path=str(HERE / "assets" / "logo.svg"),
+    max_file_size="100mb",
+)
+
 if __name__ == "__main__":
-    demo.launch(theme=THEME, css=CSS, mcp_server=True, favicon_path=str(HERE / "assets" / "logo.svg"))
+    uvicorn.run(
+        app,
+        host=os.environ.get("GRADIO_SERVER_NAME", "0.0.0.0"),
+        port=int(os.environ.get("GRADIO_SERVER_PORT", "7860")),
+        # Spaces sit behind Hugging Face's proxy; trust its forwarded scheme and host.
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+    )

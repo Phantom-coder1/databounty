@@ -6,9 +6,22 @@ Hub's YAML front matter).
 
 ## `databounty/` → `databounty-io/DataBounty`
 
-A read-only Gradio Space that shows DataBounty's live pools, published datasets, karma leaderboard and public
-profiles, and doubles as a read-only MCP server at `/gradio_api/mcp/`. It reads only DataBounty's public API and
-the Hub. It holds no secrets, no database and no visitor data, and it runs on free `cpu-basic` hardware.
+A Gradio Space that shows DataBounty's live pools, published datasets, karma leaderboard and public profiles, and
+doubles as a read-only MCP server at `/gradio_api/mcp/`. Its **Contribute** tab signs a person in to DataBounty and
+adds items as them. It has no database: browsing reads only DataBounty's public API and the Hub, and a signed-in
+person's tokens live in the process's memory. It runs on free `cpu-basic` hardware.
+
+How the Contribute tab signs people in:
+
+- The Space is an OAuth public client of DataBounty's MCP authorization server. It identifies itself with a Client
+  ID Metadata Document it serves at `/oauth/client-metadata.json`, so there is nothing to register and no client
+  secret. `app.py` adds that route, `/oauth/start` and `/oauth/callback` to a FastAPI app and mounts Gradio on it.
+- `/oauth/start` puts the `state` and the PKCE verifier in a signed, httpOnly, `SameSite=Lax` cookie, and
+  `/oauth/callback` only accepts a `state` that matches it. That cookie is what stops someone from starting a sign-in
+  and getting another person's token into their own session. It only works in the Space's own tab, so sign-in always
+  opens there.
+- Tool calls use the stateless MCP protocol (`2026-07-28`) against `https://console.databounty.io/mcp`, so there is
+  no MCP session to expire.
 
 **Deploy** (from the repository root, logged in with a token that can write to `databounty-io`):
 
@@ -29,9 +42,22 @@ hf spaces logs databounty-io/DataBounty --build --follow
 | `DATABOUNTY_APP_URL` | `https://console.databounty.io` |
 | `DATABOUNTY_HF_ORG` | `databounty-io` |
 | `CACHE_TTL_SECONDS` | `120` |
+| `DATABOUNTY_MCP_URL` | `https://console.databounty.io/mcp` |
+| `SPACE_PUBLIC_URL` | `https://$SPACE_HOST` (Hugging Face sets `SPACE_HOST`) |
+| `SPACE_COOKIE_SECRET` | random per start. Set it as a Space **secret** so sign-ins in flight survive a restart. |
+| `DATABOUNTY_CLIENT_ID` | the metadata-document URL. Local runs only; see below. |
 
-**Run locally**: `pip install "gradio[mcp]==6.30.0"`, then `python app.py` from `databounty/`. On Windows, set
-`PYTHONUTF8=1` first: Gradio prints an emoji at start-up that a cp1252 console cannot encode.
+**Run locally**: `pip install "gradio[mcp]==6.30.0"`, then `python app.py` from `databounty/`. It serves on
+`GRADIO_SERVER_PORT` (default 7860). On Windows, set `PYTHONUTF8=1` first: Gradio prints an emoji at start-up that a
+cp1252 console cannot encode.
+
+To sign in locally, point the Space at a local API (`DATABOUNTY_MCP_URL=http://localhost:4000/mcp`,
+`SPACE_PUBLIC_URL=http://127.0.0.1:7860`). DataBounty refuses to fetch a metadata document from localhost, so
+register a client instead: `POST /mcp/oauth/register` with `redirect_uris: ["http://127.0.0.1:7860/oauth/callback"]`
+and a `client_name` that does not contain "databounty". Then set `DATABOUNTY_CLIENT_ID` to the returned id.
+
+**Tests**: `python -m unittest discover -s deploy/huggingface/tests` from the repository root. The tests live outside
+`databounty/`, so they are never uploaded to the Space.
 
 **Keep in sync**
 
@@ -41,5 +67,12 @@ hf spaces logs databounty-io/DataBounty --build --follow
 - Profiles come only from `/v1/profiles/handle/:handle`, which hides private profiles and hidden fields. Do not
   switch to `/v1/community/members/:handle`: it returns members whose profile is private as long as they have a
   handle, and it ignores the per-field privacy preferences.
+- `items.py` mirrors the API's field rules (`apps/api/src/services/item-contract.ts`) and bulk-file parsing
+  (`services/jobs/bulk-source-parse.ts`). Change them together.
+- The metadata document must answer with a plain 200 JSON response. If the Space is asleep or rebuilding, DataBounty
+  can't fetch it, and sign-ins fail with `invalid_client` until the Space is back. DataBounty caches the failure for
+  60 seconds.
+- Every visitor shares one OAuth client, so code exchanges and refreshes share DataBounty's token-endpoint budget of
+  60 a minute per client (`MCP_TOKEN_RATE_LIMIT_PER_MIN`).
 - Do not name a Space `README` in this organisation. That name is the org profile card, which
   `apps/api/src/lib/publication/hugging-face.ts` rewrites after every dataset publish.

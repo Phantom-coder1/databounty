@@ -7,7 +7,7 @@ sdk: gradio
 sdk_version: 6.30.0
 python_version: "3.12"
 app_file: app.py
-short_description: Live pools, published datasets, karma and MCP tools
+short_description: Browse open pools, contribute items, karma and MCP tools
 license: apache-2.0
 pinned: true
 tags:
@@ -26,22 +26,40 @@ datasets:
 
 # DataBounty
 
-A live, read-only window onto [DataBounty](https://databounty.io), the open-source, karma-based platform where the
-community builds datasets. Sponsors request a dataset, contributors submit items, automated checks validate each
+A live window onto [DataBounty](https://databounty.io), the open-source, karma-based platform where the community
+builds datasets, and a place to contribute to it. Sponsors request a dataset, contributors submit items, automated checks validate each
 submission and human validators review the results. Finished datasets are published here on the Hub under
 [databounty-io](https://huggingface.co/databounty-io), with contributor credit.
 
 ## What's inside
 
 - **Overview**: live programme totals and the karma tier ladder.
+- **Contribute**: sign in to DataBounty and add items to an open pool, then follow them through validation. Add
+  items one at a time from a form built from the pool's fields, or upload a JSONL, JSON, CSV or TSV file and review
+  it row by row first. Rows that would be refused are flagged before anything is sent.
 - **Open pools**: every dataset currently accepting contributions, with its field contract and the karma paid per accepted item.
 - **Published datasets**: DataBounty releases on the Hub, with download counts.
 - **Leaderboard** and **Contributor profile**: public karma standings. Private profiles, and any field a member hides, are never shown.
 - **For agents (MCP)**: connect Claude, Cursor, VS Code or ChatGPT to DataBounty's own MCP server.
 
+## Contributing from the Space
+
+Sign-in opens in a new tab on databounty.io, where you can use any of its sign-in options and then approve the
+Space. The Space asks for four permissions: read pools and your own items, contribute items, upload files for file
+fields, and set up your account on first sign-in. You can untick any of them, but the Space can't contribute without
+*contribute*.
+
+- DataBounty takes items only from accounts with a verified email and a public handle. The Space walks you through
+  both on first sign-in. Claiming a handle makes your profile public at `databounty.io/<handle>` straight away.
+- Sign-in always happens in the Space's own tab. Inside the huggingface.co page, the Space's cookies are blocked as
+  third-party, so the Space opens in a tab of its own to sign you in.
+- Your DataBounty tokens stay in the Space's memory and are never written to disk or sent to your browser. Signing
+  out revokes them. A restart of the Space signs everyone out.
+- Revisions, disputes and validating other people's items happen on [databounty.io](https://databounty.io).
+
 ## Use it from an agent
 
-This Space is also a read-only MCP server that needs no sign-in:
+This Space is also a read-only MCP server that needs no sign-in. Contributing is not available over it:
 
 ```text
 https://databounty-io-databounty.hf.space/gradio_api/mcp/
@@ -56,8 +74,9 @@ It signs in with OAuth; setup for each client is on [databounty.io/agents](https
 
 ## Data
 
-The Space reads DataBounty's public API (`api.databounty.io`) and the Hub, caching responses for about two minutes.
-It stores nothing about visitors.
+Browsing reads DataBounty's public API (`api.databounty.io`) and the Hub, caching responses for about two minutes,
+and stores nothing about visitors. When you sign in, the Space acts for you through DataBounty's MCP server, and only
+when you press a button. Files you upload are deleted from the Space within an hour.
 
 ## Source
 

@@ -1,0 +1,102 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Run with: python -m unittest discover -s deploy/huggingface/tests
+
+Hermetic: DataBounty's metadata and token endpoint are stubbed, nothing touches the network.
+The full sign-in round trip against a real DataBounty API is exercised separately (see the PR).
+"""
+
+import os
+import sys
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+from urllib.parse import parse_qs, urlsplit
+
+os.environ.setdefault("SPACE_PUBLIC_URL", "https://example-space.hf.space")
+os.environ.setdefault("DATABOUNTY_MCP_URL", "https://console.example.test/mcp")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "databounty"))
+
+import account  # noqa: E402
+
+META = {
+    "issuer": "https://console.example.test/mcp",
+    "authorization_endpoint": "https://console.example.test/mcp/oauth/authorize",
+    "token_endpoint": "https://console.example.test/mcp/oauth/token",
+    "revocation_endpoint": "https://console.example.test/mcp/oauth/revoke",
+}
+TOKENS = {"access_token": "db_mcp_at_x", "refresh_token": "db_mcp_rt_x", "expires_in": 28800, "scope": "read contribute"}
+
+
+class SignInTest(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(account, "server_metadata", return_value=META)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def start(self):
+        url, cookie = account.begin_sign_in()
+        return parse_qs(urlsplit(url).query), cookie
+
+    def test_authorize_url_asks_for_pkce_the_resource_and_only_the_needed_scopes(self):
+        query, _ = self.start()
+        self.assertEqual(query["code_challenge_method"], ["S256"])
+        self.assertEqual(query["resource"], ["https://console.example.test/mcp"])
+        self.assertEqual(query["client_id"], ["https://example-space.hf.space/oauth/client-metadata.json"])
+        self.assertEqual(query["redirect_uri"], ["https://example-space.hf.space/oauth/callback"])
+        self.assertEqual(set(query["scope"][0].split()), {"read", "contribute", "artifact", "account"})
+
+    def test_completes_with_the_matching_cookie_and_keeps_tokens_server_side(self):
+        query, cookie = self.start()
+        with mock.patch.object(account, "_token_request", return_value=TOKENS) as token:
+            session_id = account.complete_sign_in({"code": "c", "state": query["state"][0], "iss": META["issuer"]}, cookie)
+        sent = token.call_args.args[0]
+        self.assertEqual(sent["grant_type"], "authorization_code")
+        self.assertEqual(sent["code_verifier"], account._unseal(cookie)["v"])
+        self.assertNotIn("db_mcp_", session_id)
+        self.assertEqual(account.session_for(session_id).access_token, "db_mcp_at_x")
+
+    def test_refuses_without_touching_the_token_endpoint(self):
+        query, cookie = self.start()
+        state = query["state"][0]
+        forged = cookie[:-4] + ("0000" if not cookie.endswith("0000") else "1111")
+        expired = account._seal({"s": state, "v": "v" * 43, "t": int(time.time()) - account.LOGIN_TTL_SECONDS - 1})
+        cases = {
+            "no cookie": ({"code": "c", "state": state}, None),
+            "another browser's state": ({"code": "c", "state": "someone-elses-state"}, cookie),
+            "tampered cookie": ({"code": "c", "state": state}, forged),
+            "expired": ({"code": "c", "state": state}, expired),
+            "declined at DataBounty": ({"error": "access_denied", "state": state}, cookie),
+            "a different issuer": ({"code": "c", "state": state, "iss": "https://evil.example/mcp"}, cookie),
+            "no code": ({"state": state}, cookie),
+        }
+        with mock.patch.object(account, "_token_request") as token:
+            for name, (params, login_cookie) in cases.items():
+                with self.subTest(name), self.assertRaises(account.SignInError):
+                    account.complete_sign_in(params, login_cookie)
+        token.assert_not_called()
+
+    def test_login_cookie_is_cookie_safe(self):
+        _, cookie = self.start()
+        self.assertRegex(cookie, r"^[A-Za-z0-9_-]+\.[0-9a-f]{64}$")
+
+
+class TransportTest(unittest.TestCase):
+    def test_reads_plain_json_and_one_event_sse(self):
+        body = '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{}"}]}}'
+        self.assertEqual(account._rpc_body(body)["id"], 1)
+        self.assertEqual(account._rpc_body(f"event: message\ndata: {body}\n\n")["id"], 1)
+        with self.assertRaises(account.ToolError):
+            account._rpc_body(": keepalive\n\n")
+
+    def test_client_metadata_matches_what_databounty_requires(self):
+        doc = account.client_metadata()
+        self.assertEqual(doc["client_id"], account.CLIENT_ID)
+        self.assertEqual(doc["redirect_uris"], [account.REDIRECT_URI])
+        self.assertEqual(doc["token_endpoint_auth_method"], "none")
+        self.assertIn("authorization_code", doc["grant_types"])
+        self.assertTrue(doc["client_name"])
+
+
+if __name__ == "__main__":
+    unittest.main()
