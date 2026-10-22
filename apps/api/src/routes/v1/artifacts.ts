@@ -32,6 +32,8 @@ import {
 } from "../../services/storage.js";
 import { prisma } from "../../lib/prisma.js";
 import { buildApprovedSampleAssets, safeToWriteSampleAssetsFor } from "../../services/bounties.js";
+import { SAMPLE_STAGES, failedHardChecks, latestSampleChecks } from "../../services/sample-checks.js";
+import { processingChecksFor } from "../../mcp/core/file-status.js";
 import { config } from "../../config.js";
 import { storage, hasMultipartUpload } from "../../lib/storage/index.js";
 import { ArtifactKind, ArtifactVisibility, ApiKeyScope, ArtifactStatus, ArtifactScanStatus, SponsorExampleReviewStatus, DatasetRequestStatus, BountyStatus } from "@prisma/client";
@@ -561,6 +563,43 @@ export async function artifactRoutes(app: FastifyInstance) {
     return reply.send({ artifact: serializeArtifact(artifact) });
   });
 
+  // What the automated checks found for one file: the file-format checks
+  // (parse, preview, similarity), and for a sponsor's sample, the sample checks
+  // an admin decides on (one example per file, the dataset type's fields, near
+  // duplicates, the sandbox run, the machine review). Same read rule as the
+  // metadata route. The dashboard's per-file "checks" panel reads this; until
+  // it existed that panel could only ever say nothing had been checked.
+  app.get("/:id/processing-events", { preHandler: [requireAuth] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const user = (req as FastifyRequest & { authedUser: AuthedUser }).authedUser;
+    const artifact = await getArtifactById(id);
+    if (!artifact) return reply.notFound("Artifact not found");
+    if (!(await canReadArtifact(artifact, user))) return reply.forbidden("Not visible to this account");
+
+    const formatChecks = await processingChecksFor(artifact);
+    const sampleChecks =
+      artifact.kind === ArtifactKind.sponsor_reference ? (await latestSampleChecks([artifact.id])).get(artifact.id) : undefined;
+    return reply.send({
+      modality: artifact.modality,
+      currentHandlerVersion: formatChecks[0]?.currentHandlerVersion ?? "",
+      events: [
+        ...formatChecks.map((check) => ({
+          stage: check.stage,
+          status: check.status,
+          handlerVersion: check.handlerVersion,
+          detail: check.detail,
+          createdAt: check.ranAt,
+        })),
+        ...SAMPLE_STAGES.flatMap((stage) => {
+          const check = sampleChecks?.get(stage);
+          return check
+            ? [{ stage, status: check.status, handlerVersion: check.handlerVersion, detail: check.detail, createdAt: check.createdAt.toISOString() }]
+            : [];
+        }),
+      ],
+    });
+  });
+
   // Download Artifact Content. Was completely ungated: any artifact id was a
   // download link for anyone. Now the same read rule as the metadata route —
   // owner, admin/member/support, the bounty's sponsor, a contributor on the
@@ -768,6 +807,9 @@ export async function artifactRoutes(app: FastifyInstance) {
       .object({
         decision: z.nativeEnum(SponsorExampleReviewStatus),
         note: z.string().trim().min(1).max(2000).optional(),
+        // Approve a sample that failed a hard automated check anyway. Needs a
+        // note saying why; see the check below.
+        override: z.boolean().optional(),
       })
       .safeParse(req.body);
     if (!parsed.success) return reply.badRequest("decision and a note for non-approval are required");
@@ -815,6 +857,29 @@ export async function artifactRoutes(app: FastifyInstance) {
       return reply.conflict(`this pool is ${current.bounty.status} — no further review is meaningful`);
     }
 
+    // The automated checks the reviewer is deciding on. A hard check that
+    // failed (several examples packed in one file, fields that don't match the
+    // dataset type, or the sample's own tests failing in the sandbox) blocks
+    // approval unless the reviewer overrides it with a reason. Advisory checks
+    // and checks that never reached a verdict don't block: they are evidence.
+    const checks = (await latestSampleChecks([id])).get(id);
+    const failedChecks = failedHardChecks(checks);
+    const overridden = parsed.data.decision === SponsorExampleReviewStatus.approved && failedChecks.length > 0;
+    if (overridden && !(parsed.data.override && parsed.data.note)) {
+      return reply.code(409).send({
+        statusCode: 409,
+        error: "Conflict",
+        code: "SAMPLE_CHECKS_FAILED",
+        message:
+          `This sample failed ${failedChecks.length === 1 ? "an automated check" : `${failedChecks.length} automated checks`}. ` +
+          "To approve it anyway, send override: true with a note explaining why.",
+        failedChecks: failedChecks.map((check) => ({
+          stage: check.stage,
+          reason: (check.detail as { reason?: unknown } | null)?.reason ?? null,
+        })),
+      });
+    }
+
     const row = await prisma.$transaction(async (tx) => {
       const updated = await tx.artifact.update({
         where: { id },
@@ -851,7 +916,19 @@ export async function artifactRoutes(app: FastifyInstance) {
         targetType: "Artifact",
         targetId: id,
         before: { sponsorReviewStatus: current.sponsorReviewStatus, sponsorReviewNote: current.sponsorReviewNote },
-        after: { sponsorReviewStatus: updated.sponsorReviewStatus, sponsorReviewNote: updated.sponsorReviewNote },
+        after: {
+          sponsorReviewStatus: updated.sponsorReviewStatus,
+          sponsorReviewNote: updated.sponsorReviewNote,
+          // Exactly what the reviewer decided on, so an approval can always be
+          // traced to the evidence that stood when it was made.
+          checks: [...(checks?.values() ?? [])].map((check) => ({
+            stage: check.stage,
+            status: check.status,
+            handlerVersion: check.handlerVersion,
+            eventId: check.eventId,
+          })),
+          ...(overridden ? { overrodeFailedChecks: failedChecks.map((check) => check.stage) } : {}),
+        },
         ip: req.ip,
         userAgent: req.headers["user-agent"],
         requestId: req.id,

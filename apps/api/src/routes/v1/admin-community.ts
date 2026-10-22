@@ -26,7 +26,17 @@ import { buildSampleGate } from "../../services/artifacts.js";
 import { canonicalLanguageFor } from "../../services/planner.js";
 import { BUNDLED_LICENSE_IDS, datasetLicense } from "../../lib/publication/license-texts.js";
 import { publicPublicationsOf, buildApprovedSampleAssets, safeToWriteSampleAssetsFor } from "../../services/bounties.js";
-import { SAMPLE_LLM_REVIEW_STAGE, SAMPLE_SIMILARITY_STAGE } from "../../services/jobs/sponsor-reference-review.js";
+import { enqueueSponsorReferenceReview } from "../../services/jobs/sponsor-reference-review.js";
+import {
+  SAMPLE_EXECUTION_STAGE,
+  SAMPLE_LLM_REVIEW_STAGE,
+  SAMPLE_RECORD_COUNT_STAGE,
+  SAMPLE_SCHEMA_STAGE,
+  SAMPLE_SIMILARITY_STAGE,
+  SAMPLE_STAGES,
+  failedHardChecks,
+  latestSampleChecks,
+} from "../../services/sample-checks.js";
 
 const reviewRequestBody = z.object({
   status: z.enum(["approved", "changes_requested", "declined"]),
@@ -1424,7 +1434,9 @@ export async function adminCommunityRoutes(app: FastifyInstance) {
         where: {
           kind: "sponsor_reference",
           status: "ready",
-          sponsorReviewStatus: { in: ["pending", "needs_changes"] },
+          // NULL is a sample uploaded before new samples started out as
+          // `pending`: nobody has reviewed it either, so it belongs here too.
+          OR: [{ sponsorReviewStatus: { in: ["pending", "needs_changes"] } }, { sponsorReviewStatus: null }],
           deletedAt: null,
         },
         include: {
@@ -1455,27 +1467,14 @@ export async function adminCommunityRoutes(app: FastifyInstance) {
         take: 100,
       });
 
-      // Latest evidence per (artifact, stage), same "ordered desc, keep only
-      // the first" idiom admin-artifacts.ts already uses for its per-stage
-      // evidence map. Advisory only — a stage that never ran stays `null`
-      // rather than defaulting to a pass, so the reviewer is never shown a
-      // fabricated verdict.
-      const evidenceRows = examples.length
-        ? await prisma.artifactProcessingEvent.findMany({
-            where: {
-              artifactId: { in: examples.map((example) => example.id) },
-              stage: { in: [SAMPLE_LLM_REVIEW_STAGE, SAMPLE_SIMILARITY_STAGE] },
-            },
-            orderBy: { createdAt: "desc" },
-          })
-        : [];
-      const latestEvidence = new Map<string, { stage: string; status: string; detail: unknown; createdAt: Date }>();
-      for (const row of evidenceRows) {
-        const key = `${row.artifactId}:${row.stage}`;
-        if (!latestEvidence.has(key)) {
-          latestEvidence.set(key, { stage: row.stage, status: row.status, detail: row.detail, createdAt: row.createdAt });
-        }
-      }
+      // Latest result per (sample, stage). A stage that never ran stays
+      // `null` rather than defaulting to a pass, so the reviewer is never
+      // shown a fabricated verdict.
+      const checksBySample = await latestSampleChecks(examples.map((example) => example.id));
+      const evidenceFor = (id: string, stage: string) => {
+        const check = checksBySample.get(id)?.get(stage);
+        return check ? { stage: check.stage, status: check.status, detail: check.detail, createdAt: check.createdAt } : null;
+      };
 
       return reply.send({
         examples: examples.map((example) => ({
@@ -1528,15 +1527,57 @@ export async function adminCommunityRoutes(app: FastifyInstance) {
                 : null,
             };
           })(),
-          // Advisory only — never a verdict the console should present as a
-          // decision. `null` means the check has not run, which the UI must
-          // show as such rather than as a pass.
+          // `null` means the check has not run, which the UI must show as
+          // such rather than as a pass. Record count, schema and execution
+          // are hard checks: approving a sample that failed one needs an
+          // explicit override (POST /v1/artifacts/:id/sponsor-review).
           evidence: {
-            llmReview: latestEvidence.get(`${example.id}:${SAMPLE_LLM_REVIEW_STAGE}`) ?? null,
-            similarity: latestEvidence.get(`${example.id}:${SAMPLE_SIMILARITY_STAGE}`) ?? null,
+            recordCount: evidenceFor(example.id, SAMPLE_RECORD_COUNT_STAGE),
+            schema: evidenceFor(example.id, SAMPLE_SCHEMA_STAGE),
+            similarity: evidenceFor(example.id, SAMPLE_SIMILARITY_STAGE),
+            execution: evidenceFor(example.id, SAMPLE_EXECUTION_STAGE),
+            llmReview: evidenceFor(example.id, SAMPLE_LLM_REVIEW_STAGE),
           },
+          stageOrder: SAMPLE_STAGES,
+          failedHardChecks: failedHardChecks(checksBySample.get(example.id)).map((check) => check.stage),
         })),
       });
+    }
+  );
+
+  // Re-run a sample's automated checks. For a check that couldn't reach a
+  // verdict, such as execution while no sandbox was configured: once the
+  // sandbox is on, this turns that `pending` into a real result. Checks that
+  // already have a verdict for the sample's current dataset type are kept.
+  app.post(
+    "/sponsor-examples/:id/recheck",
+    { preHandler: requireRole(...ADMIN_AND_MEMBER) },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const actor = (req as FastifyRequest & { authedUser: AuthedUser }).authedUser;
+      const sample = await prisma.artifact.findUnique({
+        where: { id },
+        select: { id: true, kind: true, status: true, ownerUserId: true, workspaceId: true, deletedAt: true },
+      });
+      if (!sample || sample.kind !== "sponsor_reference" || sample.deletedAt) {
+        return reply.notFound("sponsor example not found");
+      }
+      if (sample.status !== "ready") {
+        return reply.conflict("the example must clear file scanning before its checks can run");
+      }
+      await prisma.$transaction(async (tx) => {
+        await enqueueSponsorReferenceReview(sample, tx);
+        await writeAuditLog(tx, {
+          actorUserId: actor.id,
+          action: "sponsor_example.recheck_requested",
+          targetType: "Artifact",
+          targetId: id,
+          ip: req.ip,
+          userAgent: req.headers["user-agent"],
+          requestId: req.id,
+        });
+      });
+      return reply.code(202).send({ queued: true });
     }
   );
 

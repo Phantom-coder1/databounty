@@ -23,7 +23,7 @@ interface DatasetField {
  * row's pending detail so a reviewer can see what the type EXPECTED to run in,
  * even when nothing ran.
  */
-function executionEnvOf(verification: unknown): string {
+export function executionEnvOf(verification: unknown): string {
   if (!verification || typeof verification !== "object" || Array.isArray(verification)) return "";
   const env = (verification as { executionEnv?: unknown }).executionEnv;
   return typeof env === "string" ? env : "";

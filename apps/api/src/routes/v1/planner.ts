@@ -11,6 +11,7 @@ import { llmValidationEnabled } from "../../services/admin-settings.js";
 import { languageSupportFor } from "../../services/execution.js";
 import { writeAuditLog } from "../../lib/audit-log.js";
 import { REQUIRED_SPONSOR_EXAMPLES_DEFAULT } from "../../services/artifacts.js";
+import { enqueueSampleReviewsFor } from "../../services/jobs/sponsor-reference-review.js";
 import {
   PLANNER_STEPS,
   PLANNER_STEP_KEYS,
@@ -726,6 +727,10 @@ export async function plannerRoutes(app: FastifyInstance) {
         where: { plannerSessionId: id, status: { not: ArtifactStatus.deleted } },
         data: { plannerSessionId: null, datasetRequestId: request.id },
       });
+      // Check the samples against the type the request was finalized with. A
+      // sample checked while the draft named another type gets fresh checks;
+      // stages already recorded for this type are not redone.
+      await enqueueSampleReviewsFor({ datasetRequestId: request.id }, tx);
 
       await tx.plannerSession.update({ where: { id }, data: { completed: true, createdBounty: request.id } });
 

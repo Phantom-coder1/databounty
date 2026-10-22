@@ -377,6 +377,23 @@ export function ExecutionProviderStrip({ result }: { result?: ApiValidationResul
   );
 }
 
+/** Plain names for the checks every reference sample goes through before an
+ * admin decides on it (apps/api services/jobs/sponsor-reference-review.ts). */
+const SAMPLE_CHECK_LABELS: Record<string, string> = {
+  sponsor_sample_record_count: "one example per file",
+  sponsor_sample_schema: "matches the dataset's fields",
+  sponsor_sample_similarity: "different from your other samples",
+  sponsor_sample_execution: "runs in the sandbox",
+  sponsor_sample_llm_review: "machine review",
+};
+
+/** The human-readable reason a check recorded, when it gave one. */
+function checkReason(detail: unknown): string | null {
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) return null;
+  const reason = (detail as { reason?: unknown }).reason;
+  return typeof reason === "string" && reason.trim() ? reason : null;
+}
+
 export function ModalityCheckCard({
   filename,
   data,
@@ -397,14 +414,20 @@ export function ModalityCheckCard({
       </div>
       {events.length > 0 ? (
         <div className="space-y-1.5 font-mono text-[11.5px]">
-          {events.map((e) => (
-            <div key={e.stage} className="flex items-center justify-between">
-              <span className="text-ink-soft">{humanizeKey(e.stage)}</span>
-              <span className={e.status === "passed" ? "text-accent-strong" : e.status === "failed" ? "text-danger-strong" : "text-amber-700"}>
-                {e.status}
-              </span>
-            </div>
-          ))}
+          {events.map((e) => {
+            const reason = e.status !== "passed" ? checkReason(e.detail) : null;
+            return (
+              <div key={e.stage}>
+                <div className="flex items-center justify-between">
+                  <span className="text-ink-soft">{SAMPLE_CHECK_LABELS[e.stage] ?? humanizeKey(e.stage)}</span>
+                  <span className={e.status === "passed" ? "text-accent-strong" : e.status === "failed" ? "text-danger-strong" : "text-amber-700"}>
+                    {e.status.replaceAll("_", " ")}
+                  </span>
+                </div>
+                {reason && <p className="mt-0.5 font-sans text-[11px] leading-snug text-ink-soft">{reason}</p>}
+              </div>
+            );
+          })}
         </div>
       ) : (
         <p className="text-[11.5px] text-ink-faint">{loading ? "Running checks…" : "No format-check events recorded."}</p>

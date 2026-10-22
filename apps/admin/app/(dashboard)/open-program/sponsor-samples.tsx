@@ -57,17 +57,39 @@ interface SponsorExample {
   owner: SponsorExampleOwner | null;
   filename: string;
   contentType: string;
-  status: "pending" | "needs_changes";
+  // NULL: uploaded before new samples started out `pending`; never reviewed.
+  status: "pending" | "needs_changes" | null;
   note: string | null;
   createdAt: string;
   downloadUrl: string;
   contract: { id: string; name: string; version: number; fields: unknown } | null;
   scope: SponsorExampleScope | null;
   evidence: {
-    llmReview: SponsorExampleEvidence | null;
+    recordCount: SponsorExampleEvidence | null;
+    schema: SponsorExampleEvidence | null;
     similarity: SponsorExampleEvidence | null;
+    execution: SponsorExampleEvidence | null;
+    llmReview: SponsorExampleEvidence | null;
   };
+  /** Hard checks this sample failed. Approving it then needs a reason. */
+  failedHardChecks: string[];
 }
+
+/** The automated checks, in the order they run. Hard checks block approval
+ * unless the reviewer gives a reason; the others are evidence. */
+const SAMPLE_CHECKS: { key: keyof SponsorExample["evidence"]; label: string; hard: boolean }[] = [
+  { key: "recordCount", label: "one example", hard: true },
+  { key: "schema", label: "fields", hard: true },
+  { key: "similarity", label: "near-duplicate", hard: false },
+  { key: "execution", label: "sandbox run", hard: true },
+  { key: "llmReview", label: "LLM review", hard: false },
+];
+
+const CHECK_LABELS: Record<string, string> = {
+  sponsor_sample_record_count: "one example",
+  sponsor_sample_schema: "fields",
+  sponsor_sample_execution: "sandbox run",
+};
 
 export interface SponsorExamplesResponse {
   examples: SponsorExample[];
@@ -212,6 +234,29 @@ function ContractCell({ contract }: { contract: SponsorExample["contract"] }) {
   );
 }
 
+/** Queues the sample's checks again: for a check that couldn't reach a
+ * verdict, such as the sandbox run before a sandbox was configured. */
+function RecheckButton({ id }: { id: string }) {
+  const [state, setState] = useState<"idle" | "busy" | "queued" | "error">("idle");
+  const recheck = async () => {
+    setState("busy");
+    try {
+      const res = await adminAuthedFetch(`/v1/admin/sponsor-examples/${id}/recheck`, { method: "POST" });
+      setState(res.ok ? "queued" : "error");
+    } catch {
+      setState("error");
+    }
+  };
+  return (
+    <div>
+      <AdminButton variant="ghost" disabled={state === "busy" || state === "queued"} onClick={() => void recheck()}>
+        {state === "busy" ? "Queuing…" : state === "queued" ? "Checks queued" : "Re-run checks"}
+      </AdminButton>
+      {state === "error" && <div className="mt-1 text-[10px] text-rose-400">Couldn&apos;t queue the checks. Try again.</div>}
+    </div>
+  );
+}
+
 /** Opens the sample's bytes through `adminAuthedFetch`, same as
  * details/page.tsx's `AttachmentRow` — a plain cross-origin `<a href>`
  * wouldn't reliably carry the admin's session cookie to the API origin. */
@@ -297,7 +342,7 @@ export function SponsorSamplesSection({
       ) : data && rows.length === 0 ? (
         <AdminEmptyState message="No sponsor samples awaiting review." />
       ) : (
-        <AdminTable headers={["file", "owner", "contract", "requested scope", "advisory evidence", "review"]}>
+        <AdminTable headers={["file", "owner", "contract", "requested scope", "automated checks", "review"]}>
           {rows.map((example) => (
             <tr key={example.id}>
               <ATd>
@@ -317,13 +362,21 @@ export function SponsorSamplesSection({
               </ATd>
               <ATd>
                 <div className="flex flex-col gap-1.5">
-                  <EvidenceChip label="LLM review" evidence={example.evidence.llmReview} />
-                  <EvidenceChip label="similarity" evidence={example.evidence.similarity} />
+                  {SAMPLE_CHECKS.map((check) => (
+                    <EvidenceChip
+                      key={check.key}
+                      label={check.hard ? `${check.label} *` : check.label}
+                      evidence={example.evidence[check.key]}
+                    />
+                  ))}
+                  <div className="text-[10px] text-dark-dim">* blocks approval when failed</div>
+                  <RecheckButton id={example.id} />
                 </div>
               </ATd>
               <ATd>
                 <SponsorReviewControl
                   artifact={{ id: example.id, sponsorReviewStatus: example.status, sponsorReviewNote: example.note }}
+                  failedChecks={example.failedHardChecks.map((stage) => CHECK_LABELS[stage] ?? stage)}
                   onReviewed={handleReviewed}
                 />
               </ATd>

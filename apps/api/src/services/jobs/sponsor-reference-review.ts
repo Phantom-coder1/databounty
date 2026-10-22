@@ -17,22 +17,59 @@
  * Stages `sponsor_sample_record_count` and `sponsor_sample_similarity` exist
  * to catch exactly those, and both are computed from the real bytes.
  *
+ * Two more stages check the sample the way a contributor's item is checked,
+ * because contributors copy samples: `sponsor_sample_schema` applies the
+ * dataset type's field contract (services/item-contract.ts), and
+ * `sponsor_sample_execution` runs it through the type's sandbox harness
+ * (services/execution-providers). Record count, schema and execution are hard
+ * checks: an admin can approve a sample that failed one only with an explicit
+ * override (routes/v1/artifacts.ts).
+ *
  * This job NEVER approves a sample. `sponsorReviewStatus` stays whatever the
  * admin set it to; the only status this job may write is `quarantined`, and
  * only for a confirmed near-duplicate (a quarantined row is already excluded
  * from the slot count and the published brief, so it can neither satisfy the
  * gate nor reach a contributor).
  */
-import { ArtifactKind, ArtifactStatus, SponsorExampleReviewStatus, type Artifact, type Prisma } from "@prisma/client";
+import {
+  ArtifactKind,
+  ArtifactStatus,
+  SponsorExampleReviewStatus,
+  type Artifact,
+  type DatasetType,
+  type Prisma,
+} from "@prisma/client";
 import { prisma } from "../../lib/prisma.js";
 import { writeAuditLog } from "../../lib/audit-log.js";
 import { getArtifactData } from "../storage.js";
 import { openRouterConfigured, reviewSubmissionWithLlm } from "../llm-client.js";
 import { enqueueJob, workspaceKeyForUser } from "../jobs.js";
+import { contractFieldsOf, itemProblems, problemText } from "../item-contract.js";
+import {
+  SAMPLE_EXECUTION_STAGE,
+  SAMPLE_LLM_REVIEW_STAGE,
+  SAMPLE_RECORD_COUNT_STAGE,
+  SAMPLE_SCHEMA_STAGE,
+  SAMPLE_SIMILARITY_STAGE,
+} from "../sample-checks.js";
+import { splitDelimited } from "./bulk-source-parse.js";
 
-export const SAMPLE_RECORD_COUNT_STAGE = "sponsor_sample_record_count";
-export const SAMPLE_SIMILARITY_STAGE = "sponsor_sample_similarity";
-export const SAMPLE_LLM_REVIEW_STAGE = "sponsor_sample_llm_review";
+// The stage names live with the code that reads their results; re-exported
+// here for the callers that already import them from this job.
+export {
+  HARD_SAMPLE_STAGES,
+  SAMPLE_EXECUTION_STAGE,
+  SAMPLE_LLM_REVIEW_STAGE,
+  SAMPLE_RECORD_COUNT_STAGE,
+  SAMPLE_SCHEMA_STAGE,
+  SAMPLE_SIMILARITY_STAGE,
+  SAMPLE_STAGES,
+} from "../sample-checks.js";
+
+/** Bump when the field-check rule changes. */
+export const SAMPLE_SCHEMA_CHECK_VERSION = 1;
+/** Bump when how a sample is executed changes. */
+export const SAMPLE_EXECUTION_CHECK_VERSION = 1;
 
 /** Bump when the COUNTING RULE changes. Pinned to the counter rather than the
  * dataset-type contract because the bytes never change but the rule does —
@@ -278,22 +315,197 @@ async function nearestSampleSibling(
   return best;
 }
 
-/** Resolve the dataset-type contract a sample is meant to exemplify. Returns
- * null when there is nothing to validate against — in which case NO verdict is
- * recorded, so the admin-approval guard keeps holding the sample rather than
- * seeing a check that never ran. */
-async function resolveSampleDatasetType(artifact: Artifact) {
-  const typeId = artifact.bountyId
-    ? (await prisma.bounty.findUnique({ where: { id: artifact.bountyId }, select: { datasetTypeId: true } }))?.datasetTypeId
-    : artifact.datasetRequestId
-      ? (await prisma.datasetRequest.findUnique({ where: { id: artifact.datasetRequestId }, select: { datasetTypeId: true } }))
-          ?.datasetTypeId
-      : null;
+/** Resolve the dataset type a sample is meant to exemplify: the pool's, the
+ * request's, or, before a request exists, the type the sponsor has picked in
+ * the planner so far. Returns null when there is nothing to validate against,
+ * in which case NO verdict is recorded rather than a check that never ran. */
+async function resolveSampleDatasetType(artifact: Artifact): Promise<DatasetType | null> {
+  let typeId: string | null | undefined = null;
+  if (artifact.bountyId) {
+    typeId = (await prisma.bounty.findUnique({ where: { id: artifact.bountyId }, select: { datasetTypeId: true } }))
+      ?.datasetTypeId;
+  } else if (artifact.datasetRequestId) {
+    typeId = (
+      await prisma.datasetRequest.findUnique({ where: { id: artifact.datasetRequestId }, select: { datasetTypeId: true } })
+    )?.datasetTypeId;
+  } else if (artifact.plannerSessionId) {
+    const session = await prisma.plannerSession.findUnique({
+      where: { id: artifact.plannerSessionId },
+      select: { answersJson: true },
+    });
+    // The same rule finalize uses (`answers.category ?? answers.datasetTypeId`,
+    // routes/v1/planner.ts), so a draft's samples are checked against the type
+    // its request will have.
+    const answers = session?.answersJson;
+    const record = answers && typeof answers === "object" && !Array.isArray(answers) ? (answers as Record<string, unknown>) : {};
+    const picked = record.category ?? record.datasetTypeId;
+    typeId = typeof picked === "string" ? picked : null;
+  }
   if (!typeId) return null;
-  return prisma.datasetType.findUnique({
-    where: { id: typeId },
-    select: { id: true, name: true, version: true, fields: true },
+  return prisma.datasetType.findUnique({ where: { id: typeId } });
+}
+
+/** The sample as one item: a JSON object (a one-line JSONL file included), or
+ * a CSV/TSV header with exactly one row. Null when it is neither. Exported for
+ * unit tests. */
+export function samplePayload(filename: string, content: string): Record<string, unknown> | null {
+  const name = filename.toLowerCase();
+  if (name.endsWith(".csv") || name.endsWith(".tsv")) {
+    const rows = splitDelimited(content, name.endsWith(".tsv") ? "\t" : ",").filter((row) =>
+      row.some((cell) => cell.trim() !== "")
+    );
+    if (rows.length !== 2 || rows[0]!.length !== rows[1]!.length) return null;
+    return Object.fromEntries(rows[0]!.map((column, index) => [column.trim(), rows[1]![index] ?? ""]));
+  }
+  try {
+    const parsed: unknown = JSON.parse(content.trim());
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function typeVersion(datasetType: DatasetType): string {
+  return `${datasetType.id}@${datasetType.version}`;
+}
+
+/**
+ * Does the sample fill in the fields its dataset type declares? The rule is
+ * the one every intake path applies to contributors' items, so a sample that
+ * passes is one a contributor could actually submit. File fields are left
+ * out, because a sample can't carry another upload's id. Returns the sample's
+ * payload when it passed, for the execution stage.
+ */
+async function recordSchemaCheck(
+  artifact: Artifact,
+  datasetType: DatasetType,
+  content: string | null,
+  textual: boolean
+): Promise<Record<string, unknown> | null> {
+  const handlerVersion = `schema:${SAMPLE_SCHEMA_CHECK_VERSION}:${typeVersion(datasetType)}`;
+  const payload = content === null ? null : samplePayload(artifact.filename, content);
+  const existing = await stageRecorded(artifact.id, SAMPLE_SCHEMA_STAGE, handlerVersion);
+  if (existing) return existing === "passed" ? payload : null;
+
+  const about = { datasetTypeId: datasetType.id, datasetTypeVersion: datasetType.version };
+  const record = (status: string, detail: Record<string, unknown>) =>
+    prisma.artifactProcessingEvent.create({
+      data: {
+        artifactId: artifact.id,
+        stage: SAMPLE_SCHEMA_STAGE,
+        status,
+        handlerVersion,
+        detail: { ...detail, ...about } as Prisma.InputJsonValue,
+      },
+    });
+
+  const fields = contractFieldsOf(datasetType.fields).filter((field) => field.role !== "file");
+  if (fields.length === 0) {
+    await record("not_supported", {
+      reason: "Every field of this dataset type is a file, so the sample is the file itself and there are no fields to check.",
+    });
+    return null;
+  }
+  if (content === null) {
+    await record("not_supported", {
+      reason: textual
+        ? `This sample is larger than the ${Math.round(SAMPLE_REVIEW_MAX_BYTES / 1024)} KB review limit, so its fields weren't checked. A reviewer checks it directly.`
+        : "This sample is a file, not text the platform can read as an item, so its fields weren't checked. A reviewer checks it directly.",
+    });
+    return null;
+  }
+  if (!payload) {
+    await record("failed", {
+      reason:
+        "This sample isn't one item written as a JSON object (or a CSV header and one row), so contributors can't tell which value belongs to which field.",
+    });
+    return null;
+  }
+  const problems = itemProblems(fields, payload);
+  if (problems.length > 0) {
+    await record("failed", {
+      reason: `This sample doesn't match the dataset type's fields: ${problems.map(problemText).join("; ")}.`,
+      problems: problems.map((problem) => ({ ...problem })),
+    });
+    return null;
+  }
+  await record("passed", { fieldsChecked: fields.map((field) => field.key) });
+  return payload;
+}
+
+const SAMPLE_EXECUTION_REASONS: Record<string, string> = {
+  no_executable_harness: "This dataset type has no sandbox harness, so samples aren't executed. A reviewer checks it directly.",
+  no_provider_configured:
+    "No sandbox is configured, so the sample wasn't run. Re-run the checks once the sandbox is switched on.",
+};
+
+/**
+ * Run the sample through its dataset type's sandbox harness, by the same
+ * `runExecution` path contributors' items take, so a sample whose own tests
+ * fail is caught before contributors copy it. Only for a sample that matched
+ * its fields: the harness reads them.
+ *
+ * Every non-verdict is recorded as what it is. A type with no harness is
+ * `not_supported`. No sandbox configured, or none that could run it, is
+ * `pending`, which a later run (after the sandbox is switched on) replaces
+ * with a real verdict. Never a pass nothing ran.
+ */
+async function recordExecutionCheck(artifact: Artifact, datasetType: DatasetType, payload: Record<string, unknown>) {
+  const handlerVersion = `execution:${SAMPLE_EXECUTION_CHECK_VERSION}:${typeVersion(datasetType)}`;
+  const existing = await stageRecorded(artifact.id, SAMPLE_EXECUTION_STAGE, handlerVersion);
+  if (existing && existing !== "pending") return;
+
+  // Loaded here, not at the top: routes that only queue this job import this
+  // module, and they should not have to load the sandbox to do that.
+  const [{ executionToStageResult, runExecution }, { executionEnvOf }] = await Promise.all([
+    import("../execution-providers/service.js"),
+    import("../validation.js"),
+  ]);
+  const execution = await runExecution({ datasetType, payload, requestId: `sample:${artifact.id}` });
+  const result = executionToStageResult(execution, executionEnvOf(datasetType.verification));
+  const status = execution.available
+    ? result.passed
+      ? "passed"
+      : "failed"
+    : execution.reason === "no_executable_harness"
+      ? "not_supported"
+      : "pending";
+  const reason = execution.available ? undefined : SAMPLE_EXECUTION_REASONS[execution.reason] ?? result.detail.reason;
+  await prisma.artifactProcessingEvent.create({
+    data: {
+      artifactId: artifact.id,
+      stage: SAMPLE_EXECUTION_STAGE,
+      status,
+      handlerVersion,
+      detail: {
+        ...result.detail,
+        ...(reason ? { reason } : {}),
+        outcome: execution.available ? "runner_completed" : execution.reason,
+        provider: execution.available ? execution.provider : null,
+        isolationVerified: execution.available ? execution.isolationVerified : null,
+        durationMs: execution.available ? execution.durationMs : null,
+        score: result.score,
+        datasetTypeId: datasetType.id,
+        datasetTypeVersion: datasetType.version,
+      } as Prisma.InputJsonValue,
+    },
   });
+}
+
+/** An LLM verdict already recorded for this contract version. Only a TERMINAL
+ * verdict counts: a `pending` (no reviewer configured at the time) must not be
+ * permanent, so configuring a provider later lets a real verdict land. */
+async function llmVerdictRecorded(artifactId: string, handlerVersion: string): Promise<boolean> {
+  const prior = await prisma.artifactProcessingEvent.findFirst({
+    where: {
+      artifactId,
+      stage: SAMPLE_LLM_REVIEW_STAGE,
+      handlerVersion,
+      status: { in: ["passed", "failed", "not_supported"] },
+    },
+    select: { id: true },
+  });
+  return prior !== null;
 }
 
 /**
@@ -321,23 +533,17 @@ export async function runSponsorReferenceReviewJob(
   if (!datasetType) return;
   const handlerVersion = `contract:${datasetType.version}`;
 
-  // Only a TERMINAL verdict short-circuits. A previously recorded `pending`
-  // (no reviewer configured at the time) must NOT be permanent: configuring a
-  // provider later has to let a real verdict land.
-  const priorLlm = await prisma.artifactProcessingEvent.findFirst({
-    where: {
-      artifactId: artifact.id,
-      stage: SAMPLE_LLM_REVIEW_STAGE,
-      handlerVersion,
-      status: { in: ["passed", "failed", "not_supported"] },
-    },
-    select: { id: true },
-  });
-  if (priorLlm) return;
-
+  // Each stage below guards itself, so a re-run (a re-arm after the sandbox
+  // is switched on, or after the request's dataset type changes) only redoes
+  // what has no current verdict.
   const sampleMime = (artifact.detectedMimeType ?? artifact.contentType).toLowerCase();
   const textual = /^(text\/|application\/(json|x-ndjson))/.test(sampleMime);
+  const content = textual ? await readBoundedText(artifact.storageKey, SAMPLE_REVIEW_MAX_BYTES) : null;
+
+  const checkedPayload = await recordSchemaCheck(artifact, datasetType, content, textual);
+
   if (!textual) {
+    if (await llmVerdictRecorded(artifact.id, handlerVersion)) return;
     await prisma.artifactProcessingEvent.create({
       data: {
         artifactId: artifact.id,
@@ -353,8 +559,8 @@ export async function runSponsorReferenceReviewJob(
     return;
   }
 
-  const content = await readBoundedText(artifact.storageKey, SAMPLE_REVIEW_MAX_BYTES);
   if (content === null) {
+    if (await llmVerdictRecorded(artifact.id, handlerVersion)) return;
     await prisma.artifactProcessingEvent.create({
       data: {
         artifactId: artifact.id,
@@ -370,10 +576,13 @@ export async function runSponsorReferenceReviewJob(
     return;
   }
 
-  // Near-duplicate screen BEFORE spending an LLM call on a file that is not
-  // going to survive. The upload-time checksum guard only catches
-  // byte-identical re-uploads; reformatting or changing one word defeats it.
-  const near = await nearestSampleSibling(artifact, content);
+  // Near-duplicate screen BEFORE spending a sandbox run or an LLM call on a
+  // file that is not going to survive. The upload-time checksum guard only
+  // catches byte-identical re-uploads; reformatting or changing one word
+  // defeats it. Once recorded for this contract version, it is not redone.
+  const near = (await stageRecorded(artifact.id, SAMPLE_SIMILARITY_STAGE, handlerVersion))
+    ? null
+    : await nearestSampleSibling(artifact, content);
   if (near) {
     const threshold = await nearDupThreshold();
     if (near.similarity >= threshold) {
@@ -432,6 +641,10 @@ export async function runSponsorReferenceReviewJob(
       },
     });
   }
+
+  if (checkedPayload) await recordExecutionCheck(artifact, datasetType, checkedPayload);
+
+  if (await llmVerdictRecorded(artifact.id, handlerVersion)) return;
 
   if (!openRouterConfigured()) {
     // Not a verdict. `pending` with a reason that names the HUMAN as the next
@@ -535,4 +748,20 @@ export async function enqueueSponsorReferenceReview(
       tx,
     }
   );
+}
+
+/** Re-run the checks for every live sample a request or pool holds: after a
+ * planner draft becomes a request, or when the request's dataset type changes
+ * and the samples have to be checked against the new one. Stages already
+ * recorded for the current type are not redone. Returns how many were queued. */
+export async function enqueueSampleReviewsFor(
+  owner: { datasetRequestId: string } | { bountyId: string },
+  tx?: Prisma.TransactionClient
+): Promise<number> {
+  const samples = await (tx ?? prisma).artifact.findMany({
+    where: { ...owner, kind: ArtifactKind.sponsor_reference, status: ArtifactStatus.ready, deletedAt: null },
+    select: { id: true, kind: true, ownerUserId: true, workspaceId: true },
+  });
+  for (const sample of samples) await enqueueSponsorReferenceReview(sample, tx);
+  return samples.length;
 }

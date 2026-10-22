@@ -149,7 +149,11 @@ export async function contractFieldsForBounty(
     where: { id: bountyId },
     select: { datasetType: { select: { fields: true } } },
   });
-  const raw = bounty?.datasetType?.fields;
+  return contractFieldsOf(bounty?.datasetType?.fields);
+}
+
+/** The usable field declarations in a dataset type's `fields` JSON. */
+export function contractFieldsOf(raw: unknown): ContractField[] {
   if (!Array.isArray(raw)) return [];
   return (raw as unknown[]).filter(
     (field): field is ContractField =>

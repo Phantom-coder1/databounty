@@ -148,7 +148,9 @@ const LEASE_BY_TYPE: Record<JobType, number> = {
   // per-item ingest path (dedupe reads, LSH scoring, file-artifact attach)
   // submitPoolBatchItems uses. HEAVY_LEASE_MS matches that risk profile.
   "upload_draft.submit": HEAVY_LEASE_MS,
-  "sponsor_reference.review": HEAVY_LEASE_MS,
+  // Runs the sample through the sandbox like an item, so it needs the same
+  // worst-case allowance as a validation run, never less than a heavy job.
+  "sponsor_reference.review": Math.max(HEAVY_LEASE_MS, VALIDATION_LEASE_MS),
   "community.publish": HEAVY_LEASE_MS,
   "community.unpublish": HEAVY_LEASE_MS,
   "benchmark.version_build": HEAVY_LEASE_MS,

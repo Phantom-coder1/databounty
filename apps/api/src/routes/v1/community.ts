@@ -27,6 +27,7 @@ import { requireAuth, requireRole, requireVerifiedEmail, ADMIN_AND_ABOVE_READONL
 import { writeAuditLog } from "../../lib/audit-log.js";
 import { notifyAdmins, notifyUser } from "../../services/notifications.js";
 import { listDatasetRequestSamples, sampleGateFromSamples, serializeArtifact } from "../../services/artifacts.js";
+import { enqueueSampleReviewsFor } from "../../services/jobs/sponsor-reference-review.js";
 import { BUNDLED_LICENSE_IDS, datasetLicense } from "../../lib/publication/license-texts.js";
 import { PLANNER_DIFFICULTY_MIXES, canonicalLanguageFor, coherenceProblems, isLaunchableType } from "../../services/planner.js";
 import type { DatasetType } from "@prisma/client";
@@ -858,6 +859,11 @@ export async function communityRoutes(app: FastifyInstance) {
       }
 
       const updated = await tx.datasetRequest.update({ where: { id }, data });
+      // Samples are checked against their request's dataset type, so a new
+      // type means checking every sample again against it.
+      if (data.datasetTypeId !== undefined && data.datasetTypeId !== existing.datasetTypeId) {
+        await enqueueSampleReviewsFor({ datasetRequestId: id }, tx);
+      }
       await writeAuditLog(tx, {
         actorUserId: actor.id,
         action: "community_request.edited",

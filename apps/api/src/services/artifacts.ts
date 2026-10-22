@@ -1038,6 +1038,12 @@ function assertVisibilityAllowedForKind(kind: ArtifactKind, visibility: Artifact
   );
 }
 
+/** A new sponsor sample starts out waiting for an admin's decision, which is
+ * what puts it in the admin queue (GET /v1/admin/sponsor-examples). */
+function awaitingSponsorReview(kind: ArtifactKind): { sponsorReviewStatus?: SponsorExampleReviewStatus } {
+  return kind === ArtifactKind.sponsor_reference ? { sponsorReviewStatus: SponsorExampleReviewStatus.pending } : {};
+}
+
 export async function createUploadSlot(params: {
   ownerUserId: string;
   kind: ArtifactKind;
@@ -1221,6 +1227,7 @@ export async function createUploadSlot(params: {
       status: ArtifactStatus.pending_upload,
       scanStatus: ArtifactScanStatus.pending,
       uploadExpiresAt: new Date(Date.now() + uploadSlotTtlMs()),
+      ...awaitingSponsorReview(params.kind),
     },
   });
 
@@ -1396,6 +1403,7 @@ export async function createMultipartUpload(params: {
       scanStatus: ArtifactScanStatus.pending,
       uploadExpiresAt: plan.expiresAt,
       multipartUploadId: plan.uploadId,
+      ...awaitingSponsorReview(params.kind),
     },
   });
 

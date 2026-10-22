@@ -210,9 +210,10 @@ describe("GET /v1/admin/sponsor-examples", () => {
       targetItems: 100,
       auditCoveragePct: 10,
     });
-    // Advisory evidence never ran for this fixture — must be honestly null,
-    // never defaulted to a pass.
-    expect(row!.evidence).toEqual({ llmReview: null, similarity: null });
+    // No check ran for this fixture: every one must be honestly null, never
+    // defaulted to a pass, and nothing counts as failed.
+    expect(row!.evidence).toEqual({ recordCount: null, schema: null, similarity: null, execution: null, llmReview: null });
+    expect(row!.failedHardChecks).toEqual([]);
   });
 
   it("surfaces a pending pre-mint dataset-request-owned sample with owner.type 'dataset_request' and the request's own status", async () => {

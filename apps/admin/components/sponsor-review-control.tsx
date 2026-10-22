@@ -36,31 +36,48 @@ const SPONSOR_REVIEW_TONE: Record<string, AdminPillTone> = {
  */
 export function SponsorReviewControl<T extends SponsorReviewable>({
   artifact,
+  failedChecks = [],
   onReviewed,
 }: {
   artifact: T;
+  /** Hard automated checks this sample failed, by label. Approving it then
+   * needs a reason, which the API records as an override. */
+  failedChecks?: string[];
   onReviewed: (id: string, status: string, note: string | null) => void;
 }) {
   const [note, setNote] = useState("");
-  const [showNoteFor, setShowNoteFor] = useState<"needs_changes" | "rejected" | null>(null);
+  const [showNoteFor, setShowNoteFor] = useState<"approved" | "needs_changes" | "rejected" | null>(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  // Set when this sample failed a hard check: listed by the queue, or reported
+  // by the API's 409 when the caller didn't list them (the Artifacts page).
+  const [blockedBy, setBlockedBy] = useState<string[]>([]);
+  const mustOverride = failedChecks.length > 0 || blockedBy.length > 0;
 
   const submit = async (decision: "approved" | "needs_changes" | "rejected") => {
-    if ((decision === "needs_changes" || decision === "rejected") && !note.trim()) {
+    if ((decision !== "approved" || mustOverride) && !note.trim()) {
       setShowNoteFor(decision);
       return;
     }
     setSaving(true);
     setErr("");
     try {
+      const override = decision === "approved" && mustOverride;
       const res = await adminAuthedFetch(`/v1/artifacts/${artifact.id}/sponsor-review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision, note: note.trim() || undefined }),
+        body: JSON.stringify({ decision, note: note.trim() || undefined, ...(override ? { override: true } : {}) }),
       });
       if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { message?: string };
+        const body = (await res.json().catch(() => ({}))) as {
+          message?: string;
+          code?: string;
+          failedChecks?: { stage: string }[];
+        };
+        if (body.code === "SAMPLE_CHECKS_FAILED") {
+          setBlockedBy((body.failedChecks ?? []).map((check) => check.stage.replace("sponsor_sample_", "").replaceAll("_", " ")));
+          setShowNoteFor("approved");
+        }
         throw new Error(body.message || "Review failed.");
       }
       onReviewed(artifact.id, decision, note.trim() || null);
@@ -109,13 +126,22 @@ export function SponsorReviewControl<T extends SponsorReviewable>({
           reject
         </button>
       </div>
+      {mustOverride && (
+        <div className="max-w-52 text-[10px] leading-snug text-amber-400">
+          Failed {[...failedChecks, ...blockedBy].join(", ")}. Approving it anyway needs a reason.
+        </div>
+      )}
       {showNoteFor && (
         <div className="flex flex-col gap-1">
           <textarea
             value={note}
             onChange={(e) => setNote(e.target.value)}
             rows={2}
-            placeholder="Explain what the sponsor must change…"
+            placeholder={
+              showNoteFor === "approved"
+                ? "Why approve it despite the failed check?"
+                : "Explain what the sponsor must change…"
+            }
             className="w-52 rounded-md border border-dark-line bg-dark-panel p-1.5 font-mono text-[10px] text-dark-text focus:border-lime focus:outline-none"
           />
           <button
@@ -124,7 +150,7 @@ export function SponsorReviewControl<T extends SponsorReviewable>({
             onClick={() => void submit(showNoteFor)}
             className="cursor-pointer self-start rounded-full border border-dark-line px-2.5 py-1 font-mono text-[10px] text-dark-soft hover:border-dark-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {saving ? "saving…" : `confirm ${showNoteFor.replaceAll("_", " ")}`}
+            {saving ? "saving…" : showNoteFor === "approved" ? "approve anyway" : `confirm ${showNoteFor.replaceAll("_", " ")}`}
           </button>
         </div>
       )}
