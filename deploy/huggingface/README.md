@@ -7,7 +7,7 @@ Hub's YAML front matter).
 ## `databounty/` → `databounty-io/DataBounty`
 
 A Space that shows DataBounty's live pools, published datasets, karma leaderboard and public profiles, and lets a
-person sign in to DataBounty and add items to open pools as themselves. Its page is a small web app drawn like the
+person sign in to DataBounty to add items to open pools and review other people's, as themselves. Its page is a small web app drawn like the
 DataBounty console (`web/`: `index.html`, `app.css`, `app.js`, no build step), backed by a JSON API (`webapi.py`).
 Gradio is mounted underneath only for the read-only MCP server at `/gradio_api/mcp/`. It has no database: browsing
 reads only DataBounty's public API and the Hub, and a signed-in person's tokens live in the process's memory. It runs

@@ -352,6 +352,33 @@ table.list tr.click:hover td { background: var(--panel); }
 .profile-head { display: flex; align-items: center; gap: 16px; }
 .profile-head .avatar { width: 52px; height: 52px; font-size: 18px; background: var(--ink); color: var(--lime); border: 0; }
 
+/* --- Reviewing ------------------------------------------------------------------------------------------------- */
+.btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn-danger:hover { background: #a82a42; border-color: #a82a42; }
+.pool-row.has-action { padding-right: 104px; }
+.row-action { position: absolute; right: 18px; top: 15px; }
+.audit-grid { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 14px; margin-top: 14px; align-items: start; }
+.item-list { display: grid; gap: 2px; padding: 8px; position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow: auto; }
+.item-list button {
+  display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 9px; border: 0; border-radius: 8px;
+  background: none; color: var(--ink-soft); font-size: 13px; text-align: left; cursor: pointer;
+}
+.item-list button:hover { background: var(--panel); color: var(--ink); }
+.item-list button.on { background: var(--nav-active); color: var(--lime); }
+.item-list .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mark { width: 22px; height: 22px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--line-soft); color: var(--ink-soft); font-family: var(--font-mono); font-size: 10.5px; }
+.mark .i { width: 12px; height: 12px; }
+.mark.ok { background: var(--success-soft); color: var(--success); }
+.mark.flagged { background: var(--danger-soft); color: var(--danger); }
+.item-card { display: grid; gap: 16px; padding: 22px; }
+.item-card h2 { margin: 0; font-size: 17px; font-weight: 600; }
+.item-card pre.block { margin-top: 6px; }
+.files { list-style: none; margin: 6px 0 8px; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.files li { display: flex; align-items: center; gap: 7px; }
+.decide { display: grid; gap: 14px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.decide .reject { display: grid; gap: 8px; padding-top: 14px; border-top: 1px solid var(--line); }
+.item-nav { display: flex; justify-content: space-between; gap: 8px; }
+
 /* --- Small screens ------------------------------------------------------------------------------------------------ */
 @media (max-width: 600px) { .hide-sm { display: none; } }
 @media (max-width: 900px) {
@@ -387,4 +414,9 @@ table.list tr.click:hover td { background: var(--panel); }
   .form, .contract { padding: 18px 16px; }
   .form-foot { flex-direction: column; align-items: stretch; }
   .form-foot .btn { width: 100%; }
+  .audit-grid { grid-template-columns: minmax(0, 1fr); }
+  .item-list { position: static; max-height: none; display: flex; overflow-x: auto; }
+  .item-list button { width: auto; flex: none; }
+  .item-list .t { display: none; }
+  .item-card { padding: 18px 16px; }
 }

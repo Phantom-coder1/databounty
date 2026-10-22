@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// The Space's page: DataBounty's contributor console, drawn from webapi.py's data.
+// The Space's page: DataBounty's console for contributors and validators, drawn from webapi.py's data.
 // Everything dynamic goes through html`` (escaped). Only icons and markup built here are raw.
 "use strict";
 
@@ -89,6 +89,9 @@ const ICONS = {
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>',
   eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
   file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
+  briefcase: '<path d="M16 20V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/><rect width="20" height="14" x="2" y="6" rx="2"/>',
+  next: '<path d="m9 18 6-6-6-6"/>',
+  prev: '<path d="m15 18-6-6 6-6"/>',
 };
 const icon = (name) => raw(`<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`);
 
@@ -118,7 +121,10 @@ async function api(path, { method = "GET", body, form } = {}) {
   }
   if (!res.ok) {
     const message = data && (data.error || (typeof data.detail === "string" && data.detail));
-    throw new Error(message || `Something went wrong (${res.status}). Try again.`);
+    const error = new Error(message || `Something went wrong (${res.status}). Try again.`);
+    error.status = res.status;
+    error.needs = (data && data.needs) || "";
+    throw error;
   }
   return data;
 }
@@ -233,6 +239,8 @@ async function signOut() {
 
 const NAV = [
   ["#/", "code", "Contribute"],
+  ["#/validate", "shield", "Validate"],
+  ["#/sponsor", "briefcase", "Sponsor"],
   ["#/datasets", "database", "Datasets"],
   ["#/leaderboard", "trophy", "Leaderboard"],
   ["#/agents", "terminal", "API & MCP"],
@@ -241,6 +249,8 @@ const NAV = [
 
 function activeNav() {
   const hash = location.hash || "#/";
+  if (hash.startsWith("#/validate") || hash.startsWith("#/audit/")) return "#/validate";
+  if (hash.startsWith("#/sponsor")) return "#/sponsor";
   if (hash.startsWith("#/datasets")) return "#/datasets";
   if (hash.startsWith("#/leaderboard") || hash.startsWith("#/u/")) return "#/leaderboard";
   if (hash.startsWith("#/agents")) return "#/agents";
@@ -287,6 +297,9 @@ const ROUTES = [
   [/^#\/?$/, () => pageContribute()],
   [/^#\/pool\/([\w-]+)$/, (id) => pagePool(id)],
   [/^#\/submission\/([\w-]+)$/, (id) => pageSubmission(id)],
+  [/^#\/validate$/, () => pageValidate()],
+  [/^#\/audit\/([\w-]+)$/, (id) => pageAudit(id)],
+  [/^#\/sponsor$/, () => pageSponsor()],
   [/^#\/datasets$/, () => pageDatasets()],
   [/^#\/leaderboard$/, () => pageLeaderboard()],
   [/^#\/u\/([\w.-]+)$/, (handle) => pageProfile(handle)],
@@ -322,10 +335,10 @@ document.addEventListener("click", (event) => {
 
 // --- Contributor workspace ----------------------------------------------------------------------------
 
-function signInCard() {
+function signInCard(title = "Sign in to contribute", text = raw("Earn <b>karma</b> for every item reviewers accept. Use your DataBounty account, or create one on the way.")) {
   return html`<div class="card signin-card">
     <img src="/static/logo.svg" alt="">
-    <div><h2>Sign in to contribute</h2><p>Earn <b>karma</b> for every item reviewers accept. Use your DataBounty account, or create one on the way.</p></div>
+    <div><h2>${title}</h2><p>${text}</p></div>
     <div class="signin-actions">
       <button class="btn btn-primary" data-action="sign-in">sign in with DataBounty ${icon("arrow")}</button>
       <span class="note" data-signin-note>${embedded() ? "Opens a small sign-in window." : "You'll come straight back here."}</span>
@@ -779,6 +792,296 @@ async function pageSubmission(id) {
     </div>
     ${s.notes.map((note) => html`<div style="margin-top:12px">${notice("warn", html`<b>Reviewer note.</b> ${note}`)}</div>`)}
     ${s.fixUrl ? html`<div style="margin-top:14px"><a class="btn btn-primary" href="${safeUrl(s.fixUrl)}" target="_blank" rel="noopener">fix it on databounty.io ${icon("external")}</a></div>` : ""}`);
+}
+
+// --- Reviewing (validators) -----------------------------------------------------------------------------
+// An audit is a few items from one pool. Claiming it makes it yours for 24 hours; you approve each
+// item or reject it with a reason and a note, and every decision is final (DataBounty's rules).
+
+const FLAG_REASONS = [
+  ["duplicate", "Duplicate or near-duplicate"],
+  ["contaminated", "Copied from a public benchmark"],
+  ["tests_invalid", "Tests are wrong"],
+  ["solution_incorrect", "Solution is wrong"],
+  ["too_trivial", "Too easy"],
+  ["low_quality", "Low quality"],
+  ["off_spec", "Doesn't follow the pool's spec"],
+  ["other", "Something else"],
+];
+const MIN_NOTE = 10;
+const CHECK_ICONS = { pass: "check", fail: "x", wait: "clock", note: "alert" };
+
+function dueText(iso) {
+  const ms = new Date(iso).getTime() - Date.now();
+  if (!Number.isFinite(ms)) return "";
+  if (ms <= 0) return "past due";
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  return h >= 1 ? `due in ${h}h ${m}m` : `due in ${m}m`;
+}
+
+const reviewHead = () => html`<header class="page-head"><h1 class="title">Validator workspace</h1><p class="sub">Review other people's items against the pool's spec. Earn karma for every decision.</p></header>`;
+const reviewSignIn = () => signInCard("Sign in to review", "Check other people's items against the pool's spec, and earn karma for every decision.");
+
+function howReviewing() {
+  return html`<h2 class="section">How reviewing works</h2>
+    <div class="card pad"><ol class="how">
+      <li><span><b>Claim an open audit.</b> It's yours for 24 hours, and you never get your own work.</span></li>
+      <li><span><b>Check each item</b> against the pool's spec and its automated checks.</span></li>
+      <li><span><b>Approve it, or reject it</b> with a reason and a note for the contributor.</span></li>
+      <li><span><b>Earn karma</b> for every decision when the audit completes.</span></li>
+    </ol></div>`;
+}
+
+function rankCards(r) {
+  const pct = r.nextRank ? Math.round((100 * r.auditsCompleted) / Math.max(1, r.auditsCompleted + r.nextRank.toGo)) : 100;
+  const stat = (label, value, tone) => html`<div class="stat ${tone ? `stat-${tone}` : ""}"><div class="micro">${label}</div><b>${value}</b></div>`;
+  return html`
+    <div class="card karma-card">
+      <div class="karma-icon">${icon("shield")}</div>
+      <div><div class="karma-num"><b>${r.rank || "Observer"}</b><span class="mono small muted">validator rank</span></div>
+        <div class="mono small muted" style="margin-top:6px">${fmt(r.auditsCompleted)} audits completed</div></div>
+      <div class="karma-next">
+        <div class="row"><span class="mono small muted">${r.nextRank ? `next rank · ${r.nextRank.name}` : "top rank"}</span><span class="mono small">${r.nextRank ? `${fmt(r.nextRank.toGo)} to go` : ""}</span></div>
+        <div class="progress"><span style="width:${pct}%"></span></div>
+      </div>
+    </div>
+    <div class="card stats">
+      ${stat("claimed slots", `${r.active} / ${r.maxConcurrent}`, r.active >= r.maxConcurrent ? "warn" : "")}
+      ${stat("false flag rate", r.falseFlagRate != null ? `${r.falseFlagRate}%` : "—")}
+      ${stat("missed deadlines", fmt(r.missedDeadlines))}
+      ${stat("karma", fmt(state.me.karma || 0), "ok")}
+    </div>`;
+}
+
+function auditRow(a, claimable) {
+  const pct = a.items ? Math.min(100, Math.round((100 * a.decided) / a.items)) : 0;
+  const due = a.deadline && a.status !== "completed" ? dueText(a.deadline) : "";
+  const body = html`
+    <div class="head"><span class="pool-title">${a.pool}</span><span class="pill pill-${a.statusTone}">${a.statusLabel}</span>${a.language ? html`<span class="pill">${a.language}</span>` : ""}</div>
+    <div class="cap"><span class="mono small muted">${fmt(a.decided)} / ${fmt(a.items)} decided</span><div class="progress"><span style="width:${pct}%"></span></div><span class="mono small strong">${pct}%</span></div>
+    <div class="mono small">${typeof a.karma === "number" ? html`<span class="karma-text">+${fmt(a.karma)} karma / decision</span> · ` : ""}<span class="muted">${a.items} item${a.items === 1 ? "" : "s"}${a.category ? ` · ${a.category}` : ""}${due ? ` · ${due}` : ""}</span></div>`;
+  if (claimable) return html`<div class="card pool-row has-action">${body}<button class="btn btn-primary btn-sm row-action" data-claim="${a.id}">claim</button></div>`;
+  return html`<a class="card pool-row" href="#/audit/${encodeURIComponent(a.id)}">${body}<span class="row-arrow">${icon("arrow")}</span></a>`;
+}
+
+async function claimAudit(id, button) {
+  if (button) { button.disabled = true; button.textContent = "claiming…"; }
+  try {
+    await api(`/api/audits/${encodeURIComponent(id)}/claim`, { method: "POST" });
+    await loadMe(); // one more slot in use
+    if (location.hash === `#/audit/${id}`) pageAudit(id);
+    else location.hash = `#/audit/${encodeURIComponent(id)}`;
+  } catch (e) {
+    toast(e.message);
+    if (button) { button.disabled = false; button.textContent = "claim"; }
+  }
+}
+
+async function pageValidate() {
+  const live = ticket();
+  const page = $("#page");
+  const me = state.me;
+  if (!me) { mount(page, html`${reviewHead()}${reviewSignIn()}${howReviewing()}`); return; }
+  if (me.step !== "ready") { mount(page, html`${reviewHead()}${setupCard(me)}`); wireSetup(); return; }
+  if (!me.canReview) {
+    mount(page, html`${reviewHead()}<div class="card setup-card"><h2>Allow reviewing</h2><p>You signed in before the Space could review for you. Sign out, sign in again, and keep <b>validate</b> ticked.</p><button class="btn" data-action="sign-out">sign out</button></div>`);
+    return;
+  }
+  const r = me.reviewer;
+  const full = r.active >= r.maxConcurrent;
+  mount(page, html`${reviewHead()}
+    <div class="stack">${rankCards(r)}</div>
+    <h2 class="section">Your audits</h2>
+    <p class="section-sub">Audits you've claimed. Each one is yours for 24 hours from the claim.</p>
+    <div id="my-audits"><div class="skeleton"></div></div>
+    <h2 class="section">Open audits</h2>
+    <p class="section-sub">Claim one to see its items. Audits with your own work are never shown to you.</p>
+    ${full ? html`<div style="margin-bottom:12px">${notice("warn", `You're holding ${r.active} of ${r.maxConcurrent} audits, the most your rank allows. Finish one to claim another.`)}</div>` : ""}
+    <div class="filters"><label class="search">${icon("search")}<input class="input" id="audit-q" placeholder="Search by pool…" aria-label="Search audits"></label><span></span><span class="count" id="audit-count"></span></div>
+    <div id="open-audits"><div class="skeleton"></div></div>
+    <h2 class="section">Completed</h2>
+    <div id="done-audits"><div class="skeleton"></div></div>`);
+
+  const mine = async () => {
+    try {
+      const [held, late] = await Promise.all([api("/api/audits/mine?status=claimed"), api("/api/audits/mine?status=overdue_review")]);
+      if (!live()) return;
+      const rows = [...late.audits, ...held.audits];
+      mount($("#my-audits"), rows.length ? html`<div class="rows">${rows.map((a) => auditRow(a, false))}</div>` : html`<div class="card empty">None yet. Claim an open audit below.</div>`);
+    } catch (e) { if (live()) mount($("#my-audits"), notice("warn", e.message)); }
+  };
+  let latest = 0;
+  const open = async () => {
+    const seq = ++latest;
+    const q = $("#audit-q").value.trim();
+    try {
+      const data = await api(`/api/audits?q=${encodeURIComponent(q)}`);
+      if (!live() || seq !== latest) return;
+      $("#audit-count").textContent = `${data.total} open`;
+      const hidden = data.hidden ? html`<p class="hint" style="margin:10px 2px 0">${data.hidden} more hold your own work, so they're hidden from you.</p>` : "";
+      mount($("#open-audits"), data.audits.length
+        ? html`<div class="rows">${data.audits.map((a) => auditRow(a, true))}</div>${hidden}`
+        : html`<div class="card empty">No audits are open right now. New ones open as pools fill up.</div>${hidden}`);
+      $$("[data-claim]").forEach((b) => {
+        b.disabled = full;
+        b.addEventListener("click", () => claimAudit(b.dataset.claim, b));
+      });
+    } catch (e) { if (live() && seq === latest) mount($("#open-audits"), notice("warn", e.message)); }
+  };
+  const done = async () => {
+    try {
+      const data = await api("/api/audits/mine?status=completed");
+      if (!live()) return;
+      mount($("#done-audits"), data.audits.length
+        ? html`<div class="rows">${data.audits.slice(0, 10).map((a) => auditRow(a, false))}</div>`
+        : html`<div class="card empty">Audits you finish show up here.</div>`);
+    } catch (e) { if (live()) mount($("#done-audits"), notice("warn", e.message)); }
+  };
+  let timer;
+  $("#audit-q").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(open, 300); });
+  mine();
+  open();
+  done();
+}
+
+async function pageAudit(id) {
+  const live = ticket();
+  const page = $("#page");
+  const back = html`<a class="back" href="#/validate">${icon("back")} validator workspace</a>`;
+  if (!state.me) { mount(page, html`${back}${reviewSignIn()}`); return; }
+  mount(page, html`${back}<div class="skeleton" style="height:180px"></div>`);
+  let a;
+  try { a = await api(`/api/audits/${encodeURIComponent(id)}`); } catch (e) {
+    if (!live()) return;
+    if (e.needs === "claim") {
+      mount(page, html`${back}<div class="card setup-card"><h2>Claim this audit</h2><p>${e.message}</p><button class="btn btn-primary" id="claim-here">claim audit</button></div>`);
+      $("#claim-here").addEventListener("click", (ev) => claimAudit(id, ev.currentTarget));
+      return;
+    }
+    mount(page, html`${back}${notice("warn", e.message)}`);
+    return;
+  }
+  if (!live()) return;
+  const first = a.items.findIndex((item) => !item.decided);
+  renderAudit(a, first === -1 ? 0 : first, back, live);
+}
+
+function renderAudit(a, index, back, live) {
+  if (!live()) return;
+  const item = a.items[index];
+  const due = a.deadline && a.decided < a.total ? dueText(a.deadline) : "";
+  const pct = a.total ? Math.round((100 * a.decided) / a.total) : 0;
+  const mark = (it, i) => it.decided
+    ? (it.verdict === "ok" ? html`<span class="mark ok">${icon("check")}</span>` : html`<span class="mark flagged">${icon("x")}</span>`)
+    : html`<span class="mark">${i + 1}</span>`;
+  const status = !item ? "" : item.decided
+    ? (item.verdict === "ok" ? html`<span class="pill pill-ok">Approved</span>` : html`<span class="pill pill-bad">Rejected</span>`)
+    : html`<span class="pill pill-info">To decide</span>`;
+  mount($("#page"), html`${back}
+    <header class="page-head"><h1 class="title">${a.pool}</h1><p class="sub">Audit · ${a.total} item${a.total === 1 ? "" : "s"}${typeof a.karma === "number" ? ` · +${fmt(a.karma)} karma per decision` : ""}${due ? ` · ${due}` : ""}</p></header>
+    <div class="card cap-card"><div class="row"><span class="mono small">${fmt(a.decided)} of ${fmt(a.total)} decided</span><span class="mono small muted">${a.typeName}</span></div><div class="progress" style="margin-top:10px"><span style="width:${pct}%"></span></div></div>
+    ${a.total && a.decided === a.total ? html`<div style="margin-top:12px">${notice("ok", html`<b>All ${a.total} decisions recorded.</b> The audit closes by itself, and your karma for it is added then. <a href="#/validate">Back to your audits →</a>`)}</div>` : ""}
+    ${!item ? html`<div class="card empty" style="margin-top:16px">This audit has no items.</div>` : html`
+    <div class="audit-grid">
+      <nav class="card item-list" aria-label="Items">${a.items.map((it, i) => html`<button class="${i === index ? "on" : ""}" data-item="${i}">${mark(it, i)}<span class="t">${it.title || `Item ${i + 1}`}</span></button>`)}</nav>
+      <article class="card item-card">
+        <div><div class="micro">item ${index + 1} of ${a.total}</div>
+          <div class="row wrap" style="margin-top:4px"><h2>${item.title || `Item ${index + 1}`}</h2>${status}${item.method ? html`<span class="pill">${item.method}</span>` : ""}</div></div>
+        ${a.spec.length ? html`<details class="disclose" style="margin-top:0"><summary>${icon("file")} What this pool asks for</summary><div class="body">${a.spec.map((f) => html`<div class="spec"><div class="micro">${f.label} · ${f.required ? "required" : "optional"}</div><p>${f.hint}</p></div>`)}</div></details>` : ""}
+        ${item.fields.map((f) => html`<div><div class="micro">${f.label}</div><pre class="block">${f.value}</pre></div>`)}
+        ${item.attachments.length ? html`<div><div class="micro">attachments</div><ul class="files">${item.attachments.map((f) => html`<li>${icon("file")} ${f.name}${typeof f.size === "number" ? html` <span class="muted">· ${fmt(Math.ceil(f.size / 1024))} KB</span>` : ""}</li>`)}</ul><a class="mono small" href="${safeUrl(a.consoleUrl)}" target="_blank" rel="noopener">open the files on databounty.io ${icon("external")}</a></div>` : ""}
+        <div><div class="micro">automated checks</div>${item.checks.length
+          ? html`<ul class="checks" style="margin-top:6px">${item.checks.map((ch) => html`<li class="check check-${ch.state}"><span class="check-icon">${icon(CHECK_ICONS[ch.state])}</span><div><b>${ch.label}</b>${ch.reason ? html`<span>${ch.reason}</span>` : ""}</div></li>`)}</ul>`
+          : html`<p class="hint" style="margin:6px 0 0">No automated checks recorded for this item.</p>`}</div>
+        <div id="decision">${item.decided
+          ? notice(item.verdict === "ok" ? "ok" : "bad", item.verdict === "ok"
+            ? html`<b>Approved.</b> This decision is final.`
+            : html`<b>Rejected${item.flagReason ? ` · ${item.flagReason}` : ""}.</b> ${item.note} <span class="muted">This decision is final.</span>`)
+          : html`<div class="decide">
+            <div class="row between wrap"><span class="hint">Approve it if it meets the spec. Decisions are final.</span><button class="btn btn-submit" id="approve">${icon("check")} approve item</button></div>
+            <div class="reject"><div class="micro">or reject it</div>
+              <select class="select" id="flag-reason" aria-label="Why you're rejecting it"><option value="">Why are you rejecting it?</option>${FLAG_REASONS.map(([value, label]) => html`<option value="${value}">${label}</option>`)}</select>
+              <textarea class="textarea" id="flag-note" placeholder="What's wrong, for the contributor. It's all they'll see." aria-label="Note for the contributor"></textarea>
+              <div class="form-foot"><span class="mono small muted" id="note-count"></span><button class="btn btn-danger" id="reject" disabled>${icon("x")} reject item</button></div>
+            </div>
+            <div id="decision-out"></div>
+          </div>`}</div>
+        <div class="item-nav"><button class="btn btn-sm" id="prev-item" ${index === 0 ? raw("disabled") : ""}>${icon("prev")} previous</button><button class="btn btn-sm" id="next-item" ${index >= a.total - 1 ? raw("disabled") : ""}>next ${icon("next")}</button></div>
+      </article>
+    </div>`}`);
+  if (!item) return;
+  const go = (i) => { renderAudit(a, i, back, live); window.scrollTo(0, 0); };
+  $$("[data-item]").forEach((b) => b.addEventListener("click", () => go(Number(b.dataset.item))));
+  $("#prev-item").addEventListener("click", () => go(index - 1));
+  $("#next-item").addEventListener("click", () => go(index + 1));
+  if (item.decided) return;
+
+  const reason = $("#flag-reason");
+  const note = $("#flag-note");
+  const reject = $("#reject");
+  const approve = $("#approve");
+  let busy = false;
+  const update = () => {
+    const n = note.value.trim().length;
+    $("#note-count").textContent = n >= MIN_NOTE ? `${n} characters` : `${n} of at least ${MIN_NOTE} characters`;
+    reject.disabled = busy || !reason.value || n < MIN_NOTE;
+    approve.disabled = busy;
+  };
+  reason.addEventListener("change", update);
+  note.addEventListener("input", update);
+  update();
+  const decide = async (body) => {
+    if (busy) return;
+    busy = true;
+    update();
+    try {
+      await api(`/api/audits/${encodeURIComponent(a.id)}/decisions`, { method: "POST", body: { itemId: item.id, ...body } });
+      const label = (FLAG_REASONS.find(([value]) => value === body.flagReason) || ["", ""])[1];
+      Object.assign(item, { decided: true, verdict: body.verdict, flagReason: label, note: body.note || "" });
+      a.decided += 1;
+      toast(body.verdict === "ok" ? "Approved." : "Rejected. The contributor gets your note.");
+      if (a.decided === a.total) loadMe(); // the audit completes, so a slot frees up
+      const next = a.items.findIndex((it, i) => i > index && !it.decided);
+      const any = a.items.findIndex((it) => !it.decided);
+      go(next !== -1 ? next : any !== -1 ? any : index);
+    } catch (e) {
+      busy = false;
+      update();
+      mount($("#decision-out"), notice("bad", html`<b>Not saved.</b> ${e.message}`));
+    }
+  };
+  approve.addEventListener("click", () => decide({ verdict: "ok" }));
+  reject.addEventListener("click", () => decide({ verdict: "flagged", flagReason: reason.value, note: note.value.trim() }));
+}
+
+// --- Sponsoring ----------------------------------------------------------------------------------------
+// Requesting a dataset happens on databounty.io: DataBounty's API doesn't offer it to other apps.
+
+async function pageSponsor() {
+  const live = ticket();
+  const data = await overview();
+  if (!live()) return;
+  const app = safeUrl(data.appUrl || "https://console.databounty.io");
+  mount($("#page"), html`
+    <header class="page-head"><h1 class="title">Sponsor a dataset</h1><p class="sub">Ask the community for the dataset you need. Contributors build it, validators check it, and it's published openly.</p></header>
+    <div class="card signin-card">
+      <img src="/static/logo.svg" alt="">
+      <div><h2>Request a dataset</h2><p>Describe what each item needs, how many you want and how hard they should be. Requests are made on databounty.io.</p></div>
+      <div class="signin-actions"><a class="btn btn-primary" href="${app}/sponsor/create/" target="_blank" rel="noopener">request a dataset ${icon("external")}</a><span class="note">Opens databounty.io in a new tab.</span></div>
+    </div>
+    <h2 class="section">How it works</h2>
+    <div class="card pad"><ol class="how">
+      <li><span><b>You describe the dataset:</b> its fields, how many items, the difficulty and the licence, with a few sample items.</span></li>
+      <li><span><b>DataBounty's team reviews the request</b> and opens a pool for it.</span></li>
+      <li><span><b>Contributors submit items.</b> Each one is checked automatically, then reviewed by validators.</span></li>
+      <li><span><b>You can review items in your pool</b>, and dispute an accepted one while its dispute window is open.</span></li>
+      <li><span><b>The finished dataset is published</b> on the Hugging Face Hub, crediting every contributor.</span></li>
+    </ol></div>
+    <h2 class="section">Already a sponsor?</h2>
+    <div class="rows">
+      <a class="card pool-row" href="${app}/sponsor/" target="_blank" rel="noopener"><div class="head"><span class="pool-title">Your requests and pools</span></div><div class="mono small muted">Track requests, review items in your pools and close a pool, on databounty.io.</div><span class="row-arrow">${icon("external")}</span></a>
+    </div>`);
 }
 
 // --- Datasets, leaderboard, profiles ------------------------------------------------------------------

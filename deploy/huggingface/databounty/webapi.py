@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The JSON API behind the Space's web page (web/app.js).
+"""The JSON API behind the Space's web page (web/app.js): contributing, reviewing, and public reads.
 
 Public reads come straight from databounty.py. Anything done as a person goes through account.py
 with the session handle the page sends as `Authorization: Bearer <handle>`. The page keeps that
@@ -22,6 +22,7 @@ import account
 import contribute
 import databounty as db
 import items as checks
+import validate
 
 NO_STORE = {"Cache-Control": "no-store"}
 MAX_FILE_BYTES = 100 * 1024 * 1024
@@ -32,14 +33,16 @@ router = APIRouter(prefix="/api")
 class ApiError(Exception):
     """An answer for the page: an HTTP status and a message written for people."""
 
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, *, needs: str = ""):
         super().__init__(message)
         self.status = status
         self.message = message
+        self.needs = needs  # what the page should offer next, e.g. "claim"
 
 
 def api_error(_request: Request, exc: ApiError) -> JSONResponse:
-    return JSONResponse({"error": exc.message}, status_code=exc.status, headers=NO_STORE)
+    body = {"error": exc.message, **({"needs": exc.needs} if exc.needs else {})}
+    return JSONResponse(body, status_code=exc.status, headers=NO_STORE)
 
 
 def _ok(data: Any) -> JSONResponse:
@@ -168,6 +171,9 @@ def me(request: Request):
         "step": step,
         "suggestedHandle": suggestion,
         "profileUrl": f"{db.SITE_URL}/{who.get('handle')}/" if who.get("handle") else "",
+        # Sign-ins from before the Space asked for `validate` can contribute but not review.
+        "canReview": "validate" in scopes,
+        "reviewer": validate.rank_view(who),
     })
 
 
@@ -410,3 +416,69 @@ def submissions(request: Request):
 def submission(submission_id: str, request: Request):
     _, session = _session(request)
     return _ok(contribute.submission_view(_call(session, "check_submission", {"submissionId": submission_id}), db.APP_URL))
+
+
+# --- Reviewing --------------------------------------------------------------------------------------
+# A review is an audit: a few items from one pool, held by one reviewer for 24 hours.
+
+
+def _reviewer(request: Request) -> account.Session:
+    _, session = _session(request)
+    if "validate" not in session.scope.split():
+        raise ApiError(403, "The Space isn't allowed to review for you. Sign out, then sign in again and keep validate ticked.")
+    return session
+
+
+@router.get("/audits")
+def audits(request: Request, q: str = ""):
+    session = _reviewer(request)
+    search = " ".join(q.split())[:120]
+    data = _call(session, "list_audits", {"limit": 50, **({"search": search} if search else {})}) or {}
+    rows = [validate.audit_row(a) for a in data.get("audits") or []]
+    return _ok({
+        "audits": rows,
+        "total": data.get("total") if isinstance(data.get("total"), int) else len(rows),
+        # Audits holding the reviewer's own work, which they can't review.
+        "hidden": data.get("conflictExcluded") if isinstance(data.get("conflictExcluded"), int) else 0,
+    })
+
+
+@router.get("/audits/mine")
+def my_audits(request: Request, status: str = "claimed"):
+    session = _reviewer(request)
+    status = status if status in ("claimed", "overdue_review", "completed") else "claimed"
+    data = _call(session, "list_my_audits", {"status": status, "limit": 50}) or {}
+    rows = [validate.audit_row(a) for a in data.get("audits") or []]
+    return _ok({"audits": rows, "total": data.get("total") if isinstance(data.get("total"), int) else len(rows)})
+
+
+@router.post("/audits/{audit_id}/claim")
+def claim_audit(audit_id: str, request: Request):
+    session = _reviewer(request)
+    window = (_call(session, "claim_audit", {"windowId": audit_id}) or {}).get("window") or {}
+    return _ok({"id": window.get("id") or audit_id, "deadline": window.get("claimExpiresAt")})
+
+
+@router.get("/audits/{audit_id}")
+def audit(audit_id: str, request: Request):
+    session = _reviewer(request)
+    try:
+        detail = account.call_tool(session, "get_audit", {"windowId": audit_id})
+    except account.NotSignedIn as exc:
+        raise ApiError(401, "Your sign-in ended. Sign in again to continue.") from exc
+    except account.ToolError as exc:
+        # The items stay hidden until the reviewer holds the audit (DataBounty's rule).
+        if "claim_audit" in str(exc) or "Claim this audit" in str(exc):
+            raise ApiError(409, "Claim this audit to see its items. It's yours for 24 hours.", needs="claim") from exc
+        raise ApiError(400, str(exc)) from exc
+    return _ok(validate.audit_view(detail or {}, db.APP_URL))
+
+
+@router.post("/audits/{audit_id}/decisions")
+async def decide(audit_id: str, request: Request):
+    session = _reviewer(request)
+    decision, problem = validate.decision(await _json(request))
+    if problem:
+        raise ApiError(400, problem)
+    result = _call(session, "submit_decisions", {"windowId": audit_id, "decisions": [decision]}) or {}
+    return _ok({"ok": True, "decided": result.get("decisionsCount", 1)})

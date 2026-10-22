@@ -44,7 +44,8 @@ class SignInTest(unittest.TestCase):
         self.assertEqual(query["resource"], ["https://console.example.test/mcp"])
         self.assertEqual(query["client_id"], ["https://example-space.hf.space/oauth/client-metadata.json"])
         self.assertEqual(query["redirect_uri"], ["https://example-space.hf.space/oauth/callback"])
-        self.assertEqual(set(query["scope"][0].split()), {"read", "contribute", "artifact", "account"})
+        # Never sponsor: the Space has no sponsor screens.
+        self.assertEqual(set(query["scope"][0].split()), {"read", "contribute", "validate", "artifact", "account"})
 
     def test_completes_with_the_matching_cookie_and_keeps_tokens_server_side(self):
         query, cookie = self.start()

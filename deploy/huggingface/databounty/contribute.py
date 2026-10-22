@@ -305,10 +305,10 @@ def submission_row(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def submission_view(sub: dict[str, Any], app_url: str) -> dict[str, Any]:
-    """One submission for its detail page: status, each check in plain words, reviewer notes."""
+def checks_for(validation_results: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+    """Each check's latest result, in pipeline order and plain words. Results come newest first."""
     latest: dict[str, dict[str, Any]] = {}
-    for result in sub.get("validationResults") or []:  # newest first
+    for result in validation_results or []:
         stage = str(result.get("stage") or "")
         if stage and stage not in latest:
             latest[stage] = result
@@ -318,6 +318,12 @@ def submission_view(sub: dict[str, Any], app_url: str) -> dict[str, Any]:
     for stage in stages:
         state, reason = check_state(latest[stage])
         results.append({"stage": stage, "label": CHECK_LABELS.get(stage, stage.replace("_", " ").capitalize()), "state": state, "reason": reason})
+    return results
+
+
+def submission_view(sub: dict[str, Any], app_url: str) -> dict[str, Any]:
+    """One submission for its detail page: status, each check in plain words, reviewer notes."""
+    results = checks_for(sub.get("validationResults"))
     notes = [
         flag.get("note") or flag.get("validatorNote") or flag.get("message") or "A reviewer flagged this item."
         for flag in sub.get("flags") or []

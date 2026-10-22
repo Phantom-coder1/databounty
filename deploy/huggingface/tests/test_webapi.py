@@ -38,6 +38,8 @@ CONTRACT = {
     "submitLimits": {"maxItemsPerRequest": 2},
     "datasetType": {"name": "Python function", "fields": FIELDS},
 }
+AUDIT = {"id": "w1", "bountyId": "p1", "bountyTitle": "CLI parsers", "itemCount": 3, "decidedCount": 0, "karmaReward": 5,
+         "category": "code_generation", "language": "Python", "deadline": None}
 ME = {"displayName": "Asha Rao", "handle": "asha", "email": "asha@example.test", "karmaTotal": 1240, "emailVerified": True, "onboarded": True}
 
 
@@ -50,7 +52,8 @@ class WebApiTest(unittest.TestCase):
         self.client = TestClient(server)
         self.calls = []
         self.me = dict(ME)
-        self.scope = "read contribute artifact account"
+        self.scope = "read contribute validate artifact account"
+        self.unclaimed = False
         self.submit_answer = None
         patcher = mock.patch.object(account, "call_tool", side_effect=self.call_tool)
         patcher.start()
@@ -77,6 +80,21 @@ class WebApiTest(unittest.TestCase):
             return {"submissions": [{"id": f"s{i}", "status": "submitted"} for i, _ in enumerate(arguments["items"])]}
         if name == "list_my_submissions":
             return {"items": [{"id": "s1", "title": "Parse flags", "status": "tests_failed", "bounty": {"id": "p1", "title": "CLI parsers"}}], "total": 1}
+        if name == "list_audits":
+            return {"audits": [dict(AUDIT, status="available")], "total": 1, "conflictExcluded": 2}
+        if name == "list_my_audits":
+            return {"audits": [dict(AUDIT, status=arguments["status"])], "total": 1}
+        if name == "claim_audit":
+            return {"ok": True, "window": {"id": arguments["windowId"], "claimExpiresAt": "2026-10-23T10:00:00.000Z"}}
+        if name == "get_audit":
+            if self.unclaimed:
+                raise account.ToolError("Claim this audit window with claim_audit before viewing submission evidence.")
+            return {"id": arguments["windowId"], "bountyId": "p1", "status": "claimed", "karmaReward": 5,
+                    "bounty": {"title": "CLI parsers", "datasetType": {"name": "Python function", "fields": FIELDS}},
+                    "items": [{"id": "m1", "submissionId": "s1", "verdict": None, "decidedAt": None,
+                               "submission": {"title": "Parse flags", "generationMethod": "human", "payloadJson": {"task": "t", "solution": "s"}}}]}
+        if name == "submit_decisions":
+            return {"ok": True, "windowId": arguments["windowId"], "decisionsCount": len(arguments["decisions"]), "rejectedCount": 0}
         raise account.ToolError(f"{name} isn't stubbed")
 
     def sent(self, name):
@@ -188,6 +206,56 @@ class WebApiTest(unittest.TestCase):
         body = self.client.post("/api/pools/p1/bulk/send", json={"method": "human", "rows": rows}, headers=self.auth).json()
         self.assertEqual((body["sent"], body["problem"]), (1, "The pool filled up, so the rest weren't sent."))
         self.assertEqual(len(self.sent("submit_pool_items")), 1)
+
+    # --- Reviewing ---
+
+    def test_reviewing_needs_the_validate_permission(self):
+        self.session.scope = "read contribute artifact account"
+        res = self.client.get("/api/audits", headers=self.auth)
+        self.assertEqual(res.status_code, 403)
+        self.assertIn("keep validate ticked", res.json()["error"])
+        self.assertFalse(self.client.get("/api/me", headers=self.auth).json()["canReview"])
+        self.assertEqual(self.sent("list_audits"), [])
+
+    def test_me_carries_the_reviewer_standing(self):
+        self.me = {**ME, "ranks": {"validator": {"rank": "Observer", "maxConcurrentAudits": 1}}, "activity": {"activeAudits": 1}}
+        body = self.client.get("/api/me", headers=self.auth).json()
+        self.assertTrue(body["canReview"])
+        self.assertEqual((body["reviewer"]["rank"], body["reviewer"]["active"], body["reviewer"]["maxConcurrent"]), ("Observer", 1, 1))
+
+    def test_open_audits_and_the_reviewers_own(self):
+        body = self.client.get("/api/audits?q=  cli   parsers ", headers=self.auth).json()
+        self.assertEqual(self.sent("list_audits"), [{"limit": 50, "search": "cli parsers"}])
+        self.assertEqual((body["total"], body["hidden"], body["audits"][0]["statusLabel"]), (1, 2, "Open"))
+        mine = self.client.get("/api/audits/mine?status=whatever", headers=self.auth).json()
+        self.assertEqual(self.sent("list_my_audits"), [{"status": "claimed", "limit": 50}])
+        self.assertEqual(mine["audits"][0]["statusLabel"], "Yours")
+
+    def test_claiming_then_reading_an_audit(self):
+        claimed = self.client.post("/api/audits/w1/claim", headers=self.auth).json()
+        self.assertEqual(claimed, {"id": "w1", "deadline": "2026-10-23T10:00:00.000Z"})
+        self.assertEqual(self.sent("claim_audit"), [{"windowId": "w1"}])
+        view = self.client.get("/api/audits/w1", headers=self.auth).json()
+        self.assertEqual((view["pool"], view["total"], view["decided"]), ("CLI parsers", 1, 0))
+        self.assertEqual([f["key"] for f in view["items"][0]["fields"]], ["task", "solution"])
+
+    def test_an_unclaimed_audit_asks_to_be_claimed(self):
+        self.unclaimed = True
+        res = self.client.get("/api/audits/w1", headers=self.auth)
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.json()["needs"], "claim")
+        self.assertNotIn("claim_audit", res.json()["error"])
+
+    def test_a_decision_goes_to_databounty_one_item_at_a_time(self):
+        res = self.client.post("/api/audits/w1/decisions", json={"itemId": "m1", "verdict": "ok"}, headers=self.auth)
+        self.assertEqual(res.json(), {"ok": True, "decided": 1})
+        self.assertEqual(self.sent("submit_decisions"), [{"windowId": "w1", "decisions": [{"auditItemId": "m1", "verdict": "ok"}]}])
+
+    def test_a_rejection_without_a_real_note_is_not_sent(self):
+        res = self.client.post("/api/audits/w1/decisions", json={"itemId": "m1", "verdict": "flagged", "flagReason": "other", "note": "bad"}, headers=self.auth)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("at least 10 characters", res.json()["error"])
+        self.assertEqual(self.sent("submit_decisions"), [])
 
     # --- Reading ---
 
