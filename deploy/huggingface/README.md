@@ -27,11 +27,13 @@ How the Contribute tab signs people in:
 
 ```bash
 hf upload databounty-io/DataBounty deploy/huggingface/databounty . \
-  --repo-type space --exclude "**/__pycache__/**" --exclude ".gradio/**"
+  --repo-type space --exclude "__pycache__/**" --exclude "**/__pycache__/**" --exclude ".gradio/**"
 hf spaces logs databounty-io/DataBounty --build --follow
 ```
 
-`--repo-type space` is required: without it `hf upload` targets, and silently creates, a model repo.
+`--repo-type space` is required: without it `hf upload` targets, and silently creates, a model repo. Keep both
+`__pycache__` excludes: `**/__pycache__/**` does not match the folder at the top level, so a local run's bytecode
+would be uploaded with it.
 
 **Configuration** (optional Space variables; the defaults point at production):
 
