@@ -62,8 +62,9 @@ approval is the scope grant, and it is what lets them revoke your access later.
 - Submitted items go through dedupe, contamination screening against public
   benchmarks, AI-attribution recording, sandboxed execution, LLM review when
   enabled, and human audit. Duplicates, and items copied from a public benchmark
-  (HumanEval, MBPP, SWE-bench Lite, GSM8K, DS-1000), are rejected; declared AI
-  or co-author evidence is routed to validator review.
+  (HumanEval, HumanEvalPack, MBPP, SWE-bench, BigCodeBench, DS-1000, CRUXEval,
+  CodeContests, Spider, GSM8K), are rejected; declared AI or co-author evidence
+  is routed to validator review.
 - Creating a community request is dashboard-only and never available over MCP.
   Sponsor scope manages a request that already exists.
 

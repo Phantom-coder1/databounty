@@ -92,9 +92,14 @@ an immutable `ValidationResult` row.
 > **In a default deployment no automated stage can grant final acceptance.** LLM review is off, so a
 > clean automated pass lands on `accepted_pending_sample` — a non-terminal state — and a human resolves it.
 
-**Contamination screening** (`services/contamination.ts`) compares an item against public benchmarks:
-HumanEval, MBPP, SWE-bench Lite, GSM8K and DS-1000, imported from the Hugging Face datasets-server by an
-admin (`services/benchmark-corpus.ts`, the `benchmark.corpus_import` job). Text is cut into overlapping
+**Contamination screening** (`services/contamination.ts`) compares an item against ten public benchmarks:
+HumanEval and HumanEvalPack (HumanEval in six languages, with HumanEvalFix's buggy variants), MBPP, SWE-bench
+(whose test split holds Lite and Verified), BigCodeBench, DS-1000, CRUXEval, CodeContests, Spider and GSM8K,
+imported from the Hugging Face datasets-server by an admin (`services/benchmark-corpus.ts`). The import runs
+as a chain of short `benchmark.corpus_import` jobs, each reading for under a minute before it queues the
+rest, so validations keep flowing while it runs. When Hugging Face rate-limits it, the next job waits (its
+`Retry-After`, or 30 s doubling to 10 minutes) and resumes at the same page; after eight refusals in a row
+the import gives up. Text is cut into overlapping
 8-word fragments, and only their hashes are stored, never a benchmark's text. An inverted index
 (`benchmark_shingles`, one row per fragment per problem, B-tree keyed on corpus and fragment) counts the
 fragments each problem shares with the item, so a typical item is screened in about 10 ms against the

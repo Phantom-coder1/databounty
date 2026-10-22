@@ -45,7 +45,7 @@ interface Corpus {
 
 interface CorpusState {
   screening: { enabled: boolean; thresholds: { reject: number; review: number } };
-  sources: { id: string; title: string; dataset: string; splits: string[]; url: string }[];
+  sources: { id: string; title: string; dataset: string; configs?: string[]; splits: string[]; url: string }[];
   corpora: Corpus[];
 }
 
@@ -147,7 +147,7 @@ export default function ContaminationPage() {
             title="// sources"
             sub="Imported through the Hugging Face datasets-server. Problem statements and reference solutions are fingerprinted separately, so copying either one is caught."
           />
-          <AdminTable headers={["Benchmark", "Dataset", "Splits"]} caption="Benchmark sources">
+          <AdminTable headers={["Benchmark", "Dataset", "Read"]} caption="Benchmark sources">
             {d.sources.map((source) => (
               <tr key={source.id}>
                 <ATd><span className="font-medium text-dark-text">{source.title}</span></ATd>
@@ -156,7 +156,12 @@ export default function ContaminationPage() {
                     {source.dataset}
                   </a>
                 </ATd>
-                <ATd>{source.splits.join(", ")}</ATd>
+                <ATd>
+                  {source.splits.join(", ")}
+                  {(source.configs?.length ?? 0) > 1 && (
+                    <span className="text-dark-dim"> · {source.configs!.join(", ")}</span>
+                  )}
+                </ATd>
               </tr>
             ))}
           </AdminTable>
@@ -179,7 +184,13 @@ export default function ContaminationPage() {
                   {corpus.active && <AdminPill tone="lime" className="ml-2">in force</AdminPill>}
                 </ATd>
                 <ATd>{corpus.sources.join(", ")}</ATd>
-                <ATd>{corpus.status === "ready" ? corpus.itemCount.toLocaleString() : "—"}</ATd>
+                <ATd>
+                  {corpus.status === "ready"
+                    ? corpus.itemCount.toLocaleString()
+                    : corpus.status === "importing" && corpus.itemCount > 0
+                      ? `${corpus.itemCount.toLocaleString()} so far`
+                      : "—"}
+                </ATd>
                 <ATd>
                   <AdminPill tone={STATUS_TONE[corpus.status] ?? "neutral"}>{corpus.status}</AdminPill>
                   {corpus.error && <div className="mt-1 max-w-md text-[11px] text-rose-400">{corpus.error}</div>}

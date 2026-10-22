@@ -168,7 +168,12 @@ export interface JobPayloads {
   "profile_source.verify": { profileSourceId: string; checkType: "initial" | "recheck"; verificationKey: string };
   "benchmark.version_build": { benchmarkVersionId: string };
   "benchmark.run_evaluation": { benchmarkRunId: string };
-  "benchmark.corpus_import": { corpusId: string };
+  // A part of an import (services/benchmark-corpus.ts): the first has no cursor.
+  "benchmark.corpus_import": {
+    corpusId: string;
+    cursor?: { source: number; config: number; split: number; offset: number };
+    deferrals?: number;
+  };
   "notifications.fanout_watchers": WatcherFanoutPayload;
   "waitlist.notify_domain_live": { domain: string };
   "agent_issue.purge_expired": Record<string, never>;

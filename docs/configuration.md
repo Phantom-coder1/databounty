@@ -240,7 +240,7 @@ an audit event for the cap.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `HUGGINGFACE_API_TOKEN` | unset | Write token. Without it the Hugging Face target records `not_configured`. |
+| `HUGGINGFACE_API_TOKEN` | unset | Write token. Without it the Hugging Face target records `not_configured`. When set, the contamination corpus import also sends it to the Hugging Face datasets-server, which allows it more requests before rate-limiting. |
 | `HUGGINGFACE_NAMESPACE` | unset | User or org datasets are created under. |
 | `HUGGINGFACE_API_URL` | `https://huggingface.co/api` | Override for a self-hosted Hub. |
 | `GITHUB_PUBLICATION_TOKEN` | unset | **A dedicated credential, never the account token used by `gh`** — `contents:write` scoped to just the one shared datasets repo below is enough. |

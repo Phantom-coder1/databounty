@@ -46,6 +46,7 @@ export async function adminContaminationRoutes(app: FastifyInstance) {
         id: source.id,
         title: source.title,
         dataset: source.dataset,
+        configs: source.configs,
         splits: source.splits,
         url: `https://huggingface.co/datasets/${source.dataset}`,
       })),

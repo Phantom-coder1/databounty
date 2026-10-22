@@ -65,7 +65,7 @@ import {
 import { runBulkSourceParseJob } from "./services/jobs/bulk-source-parse.js";
 import { runUploadDraftSubmitJob } from "./services/jobs/upload-draft-submit.js";
 import { runSponsorReferenceReviewJob } from "./services/jobs/sponsor-reference-review.js";
-import { runBenchmarkCorpusImport } from "./services/benchmark-corpus.js";
+import { runBenchmarkCorpusImport, type CorpusImportJob } from "./services/benchmark-corpus.js";
 import {
   enqueueAgentIssueSweeps,
   purgeExpiredAgentIssues,
@@ -277,11 +277,11 @@ async function handle(job: JobEnvelope): Promise<void> {
       return;
     }
     case "benchmark.corpus_import": {
-      const payload = job.payload as { corpusId: string };
-      // Never throws for a failed import: it records the failure on the corpus
-      // version, which the admin console shows, and leaves screening on the
-      // version already in force.
-      await runBenchmarkCorpusImport(payload.corpusId);
+      // One part of an import; it queues the next part itself. Never throws for
+      // a failed import: it records the failure on the corpus version, which
+      // the admin console shows, and leaves screening on the version already
+      // in force.
+      await runBenchmarkCorpusImport(job.payload as unknown as CorpusImportJob);
       break;
     }
     case "benchmark.version_build": {

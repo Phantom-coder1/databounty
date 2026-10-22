@@ -6,7 +6,7 @@
  *
  * A small corpus is built from synthetic "benchmark problems" through the same
  * fingerprinting the importer uses, so these tests exercise the real shingling,
- * the GIN-indexed candidate lookup and the containment arithmetic. The importer
+ * the indexed candidate lookup and the containment arithmetic. The importer
  * itself runs against a stubbed Hugging Face datasets-server.
  *
  * Which corpus is active is global state, so every test leaves it as it found it.
@@ -24,7 +24,14 @@ import {
   contaminationTokens,
   screenForContamination,
 } from "./contamination.js";
-import { indexBenchmarkShingles, runBenchmarkCorpusImport, startBenchmarkImport } from "./benchmark-corpus.js";
+import {
+  BENCHMARK_SOURCES,
+  indexBenchmarkShingles,
+  runBenchmarkCorpusImport,
+  startBenchmarkImport,
+  type CorpusImportJob,
+  type ImportLimits,
+} from "./benchmark-corpus.js";
 import { runSubmissionValidation } from "./validation.js";
 import { runSponsorReferenceReviewJob } from "./jobs/sponsor-reference-review.js";
 import { SAMPLE_CONTAMINATION_STAGE } from "./sample-checks.js";
@@ -157,7 +164,10 @@ afterAll(async () => {
   await app.close();
   await prisma.artifactProcessingEvent.deleteMany({ where: { artifactId: { in: artifactIds } } });
   await prisma.artifact.deleteMany({ where: { id: { in: artifactIds } } });
-  await prisma.jobQueue.deleteMany({ where: { idempotencyKey: { in: corpusIds.map((id) => `benchmark.corpus_import:${id}`) } } });
+  // Every part of every import these tests started.
+  await prisma.jobQueue.deleteMany({
+    where: { OR: corpusIds.map((id) => ({ idempotencyKey: { startsWith: `benchmark.corpus_import:${id}` } })) },
+  });
   await prisma.benchmarkCorpus.deleteMany({ where: { id: { in: corpusIds } } });
   await prisma.benchmarkCorpus.updateMany({ where: { id: { in: previouslyActive } }, data: { active: true } });
   await prisma.submission.deleteMany({ where: { bountyId } });
@@ -309,34 +319,93 @@ describe("the validation pipeline", () => {
 });
 
 describe("importing a corpus", () => {
+  // One page per part and no pauses, so a test walks the import part by part.
+  const FAST: ImportLimits = { chunkBudgetMs: 60_000, pagesPerChunk: 1, shingleBudget: 1_000_000, pagePauseMs: 0, retryPauseMs: 0 };
+  const seen: { url: URL; auth: string | null }[] = [];
+
   function stubDatasetsServer(handler: (url: URL) => Response) {
-    globalThis.fetch = (async (input: unknown) => {
+    seen.length = 0;
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
       if (url.hostname !== "datasets-server.huggingface.co") throw new Error(`blocked: ${url}`);
+      seen.push({ url, auth: new Headers(init?.headers).get("authorization") });
       return handler(url);
     }) as typeof globalThis.fetch;
   }
 
-  it("fingerprints every row and switches screening to the new version only when it finishes", async () => {
-    stubDatasetsServer((url) => {
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+  /** HumanEval-shaped rows, served one per page whatever length is asked for. */
+  function rowsOf(prompts: string[]) {
+    return (url: URL) => {
       const offset = Number(url.searchParams.get("offset"));
-      const rows =
-        offset === 0
-          ? [
-              { row_idx: 0, row: { task_id: "HumanEval/0", prompt: PROBLEM_A, canonical_solution: "    return []" } },
-              { row_idx: 1, row: { task_id: "HumanEval/1", prompt: PROBLEM_B, canonical_solution: "    return 18" } },
-            ]
-          : [];
-      return new Response(JSON.stringify({ rows, num_rows_total: 2 }), { headers: { "content-type": "application/json" } });
+      const rows = prompts
+        .map((prompt, i) => ({ row_idx: i, row: { task_id: `HumanEval/${i}`, prompt, canonical_solution: "    return []" } }))
+        .slice(offset, offset + 1);
+      return json({ rows, num_rows_total: prompts.length });
+    };
+  }
+
+  const pendingParts = (id: string) =>
+    prisma.jobQueue.findMany({
+      where: { type: "benchmark.corpus_import", status: "pending", idempotencyKey: { startsWith: `benchmark.corpus_import:${id}` } },
+      orderBy: { createdAt: "asc" },
     });
 
+  /** Run the next queued part, as the worker would, whatever its wait. */
+  async function runNextPart(id: string, limits = FAST) {
+    const [next] = await pendingParts(id);
+    if (!next) return null;
+    await prisma.jobQueue.update({ where: { id: next.id }, data: { status: "done" } });
+    await runBenchmarkCorpusImport(next.payload as unknown as CorpusImportJob, limits);
+    return next;
+  }
+
+  async function runImport(id: string): Promise<number> {
+    for (let ran = 0; ran < 40; ran += 1) {
+      if (!(await runNextPart(id))) return ran;
+    }
+    throw new Error("the import never finished");
+  }
+
+  /** Hand the test corpus back to the rest of this file. */
+  async function restoreActive(imported: string) {
+    await prisma.benchmarkCorpus.update({ where: { id: imported }, data: { active: false } });
+    await prisma.benchmarkCorpus.update({ where: { id: corpusId }, data: { active: true } });
+  }
+
+  it("knows the ten benchmarks, each with what to read", () => {
+    expect(BENCHMARK_SOURCES.map((source) => source.id)).toEqual([
+      "humaneval", "mbpp", "swe-bench", "gsm8k", "ds-1000", "bigcodebench", "humanevalpack", "cruxeval", "code-contests", "spider",
+    ]);
+    for (const source of BENCHMARK_SOURCES) {
+      expect(source.configs.length * source.splits.length * source.parts.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("imports in short parts and switches screening to the new version only after the last", async () => {
+    stubDatasetsServer(rowsOf([PROBLEM_A, PROBLEM_B]));
     const corpus = await startBenchmarkImport(["humaneval"], { userId });
     corpusIds.push(corpus.id);
-    expect(corpus.active).toBe(false);
-    await runBenchmarkCorpusImport(corpus.id);
 
-    const imported = await prisma.benchmarkCorpus.findUniqueOrThrow({ where: { id: corpus.id } });
-    expect(imported).toMatchObject({ status: "ready", active: true, itemCount: 2 });
+    // The first part reads one page and queues the rest.
+    await runNextPart(corpus.id);
+    expect(await prisma.benchmarkCorpus.findUniqueOrThrow({ where: { id: corpus.id } })).toMatchObject({
+      status: "importing",
+      active: false,
+      itemCount: 1,
+    });
+    const [second] = await pendingParts(corpus.id);
+    expect(second!.payload).toMatchObject({ corpusId: corpus.id, cursor: { source: 0, config: 0, split: 0, offset: 1 } });
+    expect((await prisma.benchmarkCorpus.findUniqueOrThrow({ where: { id: corpusId } })).active).toBe(true);
+
+    expect(await runImport(corpus.id)).toBe(1);
+    expect(await prisma.benchmarkCorpus.findUniqueOrThrow({ where: { id: corpus.id } })).toMatchObject({
+      status: "ready",
+      active: true,
+      itemCount: 2,
+    });
     const fingerprints = await prisma.benchmarkItem.findMany({ where: { corpusId: corpus.id }, select: { shingles: true } });
     expect(await prisma.benchmarkShingle.count({ where: { corpusId: corpus.id } })).toBe(
       fingerprints.reduce((total, item) => total + item.shingles.length, 0),
@@ -346,25 +415,137 @@ describe("importing a corpus", () => {
       { label: "openai/openai_humaneval HumanEval/0 (problem)" },
       { label: "openai/openai_humaneval HumanEval/1 (problem)" },
     ]);
-
-    // Hand the test corpus back to the rest of this file.
-    await prisma.benchmarkCorpus.update({ where: { id: corpus.id }, data: { active: false } });
-    await prisma.benchmarkCorpus.update({ where: { id: corpusId }, data: { active: true } });
+    await restoreActive(corpus.id);
   });
 
-  it("marks a failed import and leaves the version in force untouched", async () => {
+  it("ends a part early once it holds enough shingles to save", async () => {
+    stubDatasetsServer(rowsOf([PROBLEM_A, PROBLEM_B]));
+    const corpus = await startBenchmarkImport(["humaneval"], { userId });
+    corpusIds.push(corpus.id);
+    // Ten pages allowed, but one problem's shingles already fill the part.
+    await runNextPart(corpus.id, { ...FAST, pagesPerChunk: 10, shingleBudget: 10 });
+    expect(seen).toHaveLength(1);
+    expect((await prisma.benchmarkCorpus.findUniqueOrThrow({ where: { id: corpus.id } })).itemCount).toBe(1);
+    await runImport(corpus.id);
+    expect(await prisma.benchmarkCorpus.findUniqueOrThrow({ where: { id: corpus.id } })).toMatchObject({ status: "ready", itemCount: 2 });
+    await restoreActive(corpus.id);
+  });
+
+  it("reads every config of a benchmark that has several", async () => {
+    stubDatasetsServer((url) => {
+      const config = url.searchParams.get("config");
+      const rows = url.searchParams.get("offset") === "0" ? [{ row_idx: 0, row: { task_id: `${config}/0`, prompt: PROBLEM_A } }] : [];
+      return json({ rows, num_rows_total: 1 });
+    });
+    const corpus = await startBenchmarkImport(["humanevalpack"], { userId });
+    corpusIds.push(corpus.id);
+    await runImport(corpus.id);
+    expect([...new Set(seen.map((request) => request.url.searchParams.get("config")))]).toEqual(["python", "js", "java", "go", "cpp", "rust"]);
+    expect(await prisma.benchmarkItem.count({ where: { corpusId: corpus.id } })).toBe(6);
+    await restoreActive(corpus.id);
+  });
+
+  it("waits when Hugging Face rate-limits it, then carries on from the same page", async () => {
+    const serve = rowsOf([PROBLEM_A, PROBLEM_B]);
+    let refused = false;
+    stubDatasetsServer((url) => {
+      if (url.searchParams.get("offset") === "1" && !refused) {
+        refused = true;
+        return new Response("slow down", { status: 429, headers: { "retry-after": "120" } });
+      }
+      return serve(url);
+    });
+    const corpus = await startBenchmarkImport(["humaneval"], { userId });
+    corpusIds.push(corpus.id);
+
+    // Allowed two pages, the first part reads one and is turned away at the second.
+    const before = Date.now();
+    await runNextPart(corpus.id, { ...FAST, pagesPerChunk: 2 });
+    const [waiting] = await pendingParts(corpus.id);
+    expect(waiting!.payload).toMatchObject({ cursor: { offset: 1 }, deferrals: 1 });
+    expect(waiting!.nextAttemptAt!.getTime()).toBeGreaterThanOrEqual(before + 119_000);
+    expect((await prisma.benchmarkCorpus.findUniqueOrThrow({ where: { id: corpus.id } })).itemCount).toBe(1);
+
+    await runImport(corpus.id);
+    expect(await prisma.benchmarkCorpus.findUniqueOrThrow({ where: { id: corpus.id } })).toMatchObject({ status: "ready", itemCount: 2 });
+    await restoreActive(corpus.id);
+  });
+
+  it("gives up when Hugging Face keeps refusing, and leaves the version in force untouched", async () => {
     stubDatasetsServer(() => new Response("upstream down", { status: 503 }));
     const corpus = await startBenchmarkImport(["gsm8k"], { userId });
     corpusIds.push(corpus.id);
-    await runBenchmarkCorpusImport(corpus.id);
-
+    // The first try, then eight waits.
+    expect(await runImport(corpus.id)).toBe(9);
     const failed = await prisma.benchmarkCorpus.findUniqueOrThrow({ where: { id: corpus.id } });
     expect(failed).toMatchObject({ status: "failed", active: false, itemCount: 0 });
-    expect(failed.error).toMatch(/HTTP 503/);
+    expect(failed.error).toMatch(/HTTP 503.*8 times in a row/);
     expect(await prisma.benchmarkItem.count({ where: { corpusId: corpus.id } })).toBe(0);
     expect(await prisma.benchmarkShingle.count({ where: { corpusId: corpus.id } })).toBe(0);
     expect((await prisma.benchmarkCorpus.findUniqueOrThrow({ where: { id: corpusId } })).active).toBe(true);
-  }, 30_000);
+  });
+
+  it("stops at once, naming the dataset, when a split doesn't exist", async () => {
+    stubDatasetsServer(() => json({ error: "The split does not exist." }, 404));
+    const corpus = await startBenchmarkImport(["cruxeval"], { userId });
+    corpusIds.push(corpus.id);
+    expect(await runImport(corpus.id)).toBe(1);
+    const failed = await prisma.benchmarkCorpus.findUniqueOrThrow({ where: { id: corpus.id } });
+    expect(failed.status).toBe("failed");
+    expect(failed.error).toMatch(/cruxeval-org%2Fcruxeval.*HTTP 404/);
+  });
+
+  it("doesn't double rows or rerun the rest when a part runs again after a crash", async () => {
+    stubDatasetsServer(rowsOf([PROBLEM_A, PROBLEM_B, LONG_PROBLEM]));
+    const corpus = await startBenchmarkImport(["humaneval"], { userId });
+    corpusIds.push(corpus.id);
+    const first = await runNextPart(corpus.id);
+    await runNextPart(corpus.id);
+    const [third] = await pendingParts(corpus.id);
+
+    // The first part again, as if its worker died after saving.
+    await runBenchmarkCorpusImport(first!.payload as unknown as CorpusImportJob, FAST);
+    expect((await prisma.benchmarkCorpus.findUniqueOrThrow({ where: { id: corpus.id } })).itemCount).toBe(2);
+    expect(await prisma.benchmarkItem.count({ where: { corpusId: corpus.id } })).toBe(2);
+    expect((await pendingParts(corpus.id)).map((job) => job.id)).toEqual([third!.id]);
+
+    await runImport(corpus.id);
+    expect(await prisma.benchmarkCorpus.findUniqueOrThrow({ where: { id: corpus.id } })).toMatchObject({ status: "ready", itemCount: 3 });
+    await restoreActive(corpus.id);
+  });
+
+  it("doesn't let an import that stopped between parts block the next one", async () => {
+    const stuck = await prisma.benchmarkCorpus.create({
+      data: { name: `stuck-${stamp}`, version: 1, source: "humaneval", status: "importing", active: false },
+    });
+    corpusIds.push(stuck.id);
+    stubDatasetsServer(rowsOf([PROBLEM_A]));
+    const corpus = await startBenchmarkImport(["humaneval"], { userId });
+    corpusIds.push(corpus.id);
+    expect(await prisma.benchmarkCorpus.findUniqueOrThrow({ where: { id: stuck.id } })).toMatchObject({
+      status: "failed",
+      error: "The import stopped before it finished.",
+    });
+    await runImport(corpus.id);
+    await restoreActive(corpus.id);
+  });
+
+  it("sends the Hugging Face token when one is set, for a higher rate limit", async () => {
+    const saved = process.env.HUGGINGFACE_API_TOKEN;
+    process.env.HUGGINGFACE_API_TOKEN = "hf_test_token";
+    try {
+      stubDatasetsServer(rowsOf([PROBLEM_A]));
+      const corpus = await startBenchmarkImport(["humaneval"], { userId });
+      corpusIds.push(corpus.id);
+      await runImport(corpus.id);
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.every((request) => request.auth === "Bearer hf_test_token")).toBe(true);
+      await restoreActive(corpus.id);
+    } finally {
+      if (saved === undefined) delete process.env.HUGGINGFACE_API_TOKEN;
+      else process.env.HUGGINGFACE_API_TOKEN = saved;
+    }
+  });
 });
 
 describe("admin routes", () => {
