@@ -794,6 +794,9 @@ app = gr.mount_gradio_app(
     css=CSS,
     favicon_path=str(HERE / "assets" / "logo.svg"),
     max_file_size="100mb",
+    # Spaces set GRADIO_SSR_MODE, and in SSR mode Gradio starts a Node server on
+    # the Space's one public port, which uvicorn below must own.
+    ssr_mode=False,
 )
 
 if __name__ == "__main__":
