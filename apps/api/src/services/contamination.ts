@@ -17,10 +17,11 @@ import { getAdminSetting } from "./admin-settings.js";
  * How a match is found. Text is reduced to lowercase word tokens (letters,
  * digits and underscores, so formatting and punctuation don't matter) and cut
  * into overlapping 8-token shingles. Each shingle is stored only as a short
- * hash: the corpus never holds a benchmark's text. A GIN index on those hashes
- * finds every benchmark problem sharing at least one shingle with the item,
- * and for each the CONTAINMENT is computed: the share of that problem's
- * shingles found in the item. Containment, not plain similarity, because an
+ * hash: the corpus never holds a benchmark's text. An inverted index
+ * (benchmark_shingles: one row per shingle per problem) counts, for every
+ * problem, how many of the item's shingles it shares, through index probes
+ * rather than a scan. From that comes the CONTAINMENT: the share of that
+ * problem's shingles found in the item. Containment, not plain similarity, because an
  * item copies a problem into a larger payload (its own explanation, tests,
  * a broken variant), and plain similarity would be diluted by everything the
  * benchmark doesn't have.
@@ -38,8 +39,8 @@ export const MIN_ITEM_SHINGLES = 10;
 /** Shared shingles needed before a match counts at all. */
 const MIN_OVERLAP_REVIEW = 6;
 const MIN_OVERLAP_REJECT = 10;
-/** Candidate problems examined per item. Ordered by nothing in particular, so it is set well above any real match count. */
-const MAX_CANDIDATES = 400;
+/** Matches returned per item, closest first. Only a few are shown; the rest matter only if one is a confident copy. */
+const MAX_MATCHES = 50;
 
 const TOKEN = /[\p{L}\p{N}_]+/gu;
 
@@ -151,50 +152,56 @@ export async function screenForContamination(payload: unknown): Promise<Contamin
     };
   }
 
-  const candidates = await prisma.$queryRaw<{ label: string | null; shingles: string[] }[]>(Prisma.sql`
-    SELECT label, shingles
-      FROM benchmark_items
-     WHERE corpus_id = ${corpus.id}
-       AND shingles && ${shingles}::text[]
-     LIMIT ${MAX_CANDIDATES}
+  // One index probe per shingle of the item. The database counts the shared
+  // shingles per problem and returns only problems sharing enough to count,
+  // closest first.
+  const rows = await prisma.$queryRaw<{ label: string | null; shared: number; total: number }[]>(Prisma.sql`
+    WITH hits AS (
+      SELECT item_id, count(*)::int AS shared
+        FROM benchmark_shingles
+       WHERE corpus_id = ${corpus.id}
+         AND shingle = ANY(${shingles}::text[])
+       GROUP BY item_id
+      HAVING count(*) >= ${MIN_OVERLAP_REVIEW}
+    )
+    SELECT i.label, h.shared, cardinality(i.shingles)::int AS total
+      FROM hits h
+      JOIN benchmark_items i ON i.id = h.item_id
+     ORDER BY h.shared::float8 / greatest(cardinality(i.shingles), 1) DESC, h.shared DESC
+     LIMIT ${MAX_MATCHES}
   `);
-
-  const mine = new Set(shingles);
-  const matches: ContaminationMatch[] = candidates
-    .map((candidate) => {
-      const shared = candidate.shingles.reduce((count, shingle) => count + (mine.has(shingle) ? 1 : 0), 0);
-      return {
-        label: candidate.label,
-        containment: candidate.shingles.length > 0 ? shared / candidate.shingles.length : 0,
-        sharedShingles: shared,
-        problemShingles: candidate.shingles.length,
-      };
-    })
-    .sort((a, b) => b.containment - a.containment || b.sharedShingles - a.sharedShingles);
+  const matches: ContaminationMatch[] = rows.map((row) => ({
+    label: row.label,
+    containment: row.total > 0 ? row.shared / row.total : 0,
+    sharedShingles: row.shared,
+    problemShingles: row.total,
+  }));
 
   const { reject, review } = await contaminationThresholds();
-  const best = matches[0];
-  const decision: ContaminationDecision =
-    best && best.containment >= reject && best.sharedShingles >= MIN_OVERLAP_REJECT
-      ? "rejected"
-      : best && best.containment >= review && best.sharedShingles >= MIN_OVERLAP_REVIEW
-        ? "review_required"
-        : "accepted";
+  // Any match over a line decides, not only the closest: a short problem can
+  // be closest by share while sharing too few shingles to count, with a
+  // confident copy of a longer one right behind it.
+  const rejecting = matches.find((m) => m.containment >= reject && m.sharedShingles >= MIN_OVERLAP_REJECT);
+  const reviewing = matches.find((m) => m.containment >= review && m.sharedShingles >= MIN_OVERLAP_REVIEW);
+  const decision: ContaminationDecision = rejecting ? "rejected" : reviewing ? "review_required" : "accepted";
+  const decisive = rejecting ?? reviewing ?? matches[0];
+  const shown = decisive ? [decisive, ...matches.filter((match) => match !== decisive)].slice(0, 3) : [];
 
   return {
     decision,
     outcome: decision === "accepted" ? "clean" : "match",
     screened: true,
-    containment: best?.containment ?? 0,
+    containment: decisive?.containment ?? 0,
     detail: {
       ...about,
       thresholds: { reject, review },
-      // The closest few, so a reviewer can see what the item resembles.
-      matches: matches.slice(0, 3).map((match) => ({ ...match, containment: Number(match.containment.toFixed(3)) })),
+      // The deciding match first, then the closest others, so a reviewer can
+      // see what the item resembles.
+      matches: shown.map((match) => ({ ...match, containment: Number(match.containment.toFixed(3)) })),
       ...(decision === "rejected"
-        ? { reason: `This item reproduces a public benchmark problem (${best!.label ?? "unlabelled"}).` }
+        ? { reason: `This item reproduces a public benchmark problem (${decisive!.label ?? "unlabelled"}).` }
         : decision === "review_required"
-          ? { reason: `Parts of this item resemble a public benchmark problem (${best!.label ?? "unlabelled"}); a reviewer decides.` }
+          ? { reason: `Parts of this item resemble a public benchmark problem (${decisive!.label ?? "unlabelled"}); a reviewer decides.` }
           : {}),
     },
   };

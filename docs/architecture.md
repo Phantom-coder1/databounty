@@ -95,8 +95,10 @@ an immutable `ValidationResult` row.
 **Contamination screening** (`services/contamination.ts`) compares an item against public benchmarks:
 HumanEval, MBPP, SWE-bench Lite, GSM8K and DS-1000, imported from the Hugging Face datasets-server by an
 admin (`services/benchmark-corpus.ts`, the `benchmark.corpus_import` job). Text is cut into overlapping
-8-word fragments, and only their hashes are stored (`benchmark_items.shingles`, GIN-indexed), never a
-benchmark's text, so each item costs one indexed lookup. The score is containment: the share of a
+8-word fragments, and only their hashes are stored, never a benchmark's text. An inverted index
+(`benchmark_shingles`, one row per fragment per problem, B-tree keyed on corpus and fragment) counts the
+fragments each problem shares with the item, so a typical item is screened in about 10 ms against the
+full corpus (40 ms at 3,000 words, 200 ms at 20,000). The score is containment: the share of a
 problem's fragments found in the item, which a copy wrapped in the item's own explanation can't dilute.
 A match also needs a minimum number of shared fragments, so a short problem can't match by coincidence.
 Each import builds a new corpus version, and screening switches to it only when every row is in; a

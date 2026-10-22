@@ -227,6 +227,22 @@ async function* benchmarkRows(
 }
 
 /**
+ * Build a corpus version's inverted index (BenchmarkShingle) from its
+ * problems' shingle arrays, in one statement: one row per shingle per problem.
+ * Screening looks problems up through it (services/contamination.ts).
+ */
+export async function indexBenchmarkShingles(corpusId: string): Promise<number> {
+  return prisma.$executeRaw`
+    INSERT INTO benchmark_shingles (corpus_id, shingle, item_id)
+    SELECT corpus_id, unnest(shingles), id FROM benchmark_items WHERE corpus_id = ${corpusId}`;
+}
+
+async function clearCorpusRows(corpusId: string) {
+  await prisma.benchmarkShingle.deleteMany({ where: { corpusId } });
+  await prisma.benchmarkItem.deleteMany({ where: { corpusId } });
+}
+
+/**
  * `benchmark.corpus_import` handler: fingerprint every row of every source,
  * then make this version the one screening uses. On any failure the version is
  * marked failed, its partial rows are removed, and the active version stays.
@@ -239,7 +255,7 @@ export async function runBenchmarkCorpusImport(corpusId: string): Promise<void> 
   try {
     const deadline = Date.now() + IMPORT_BUDGET_MS;
     // A retried run starts clean rather than doubling rows.
-    await prisma.benchmarkItem.deleteMany({ where: { corpusId } });
+    await clearCorpusRows(corpusId);
     let itemCount = 0;
     let batch: Prisma.BenchmarkItemCreateManyInput[] = [];
     const flush = async () => {
@@ -264,6 +280,7 @@ export async function runBenchmarkCorpusImport(corpusId: string): Promise<void> 
     }
     await flush();
     if (itemCount === 0) throw new Error("No benchmark problems could be fingerprinted.");
+    await indexBenchmarkShingles(corpusId);
 
     await prisma.$transaction([
       prisma.benchmarkCorpus.updateMany({ where: { active: true, id: { not: corpusId } }, data: { active: false } }),
@@ -273,7 +290,7 @@ export async function runBenchmarkCorpusImport(corpusId: string): Promise<void> 
       }),
     ]);
   } catch (error) {
-    await prisma.benchmarkItem.deleteMany({ where: { corpusId } });
+    await clearCorpusRows(corpusId);
     await prisma.benchmarkCorpus.update({
       where: { id: corpusId },
       data: { status: "failed", error: (error instanceof Error ? error.message : String(error)).slice(0, 500) },

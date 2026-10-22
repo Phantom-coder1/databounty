@@ -2591,19 +2591,20 @@ model ArtifactProcessingEvent {
 }
 
 model BenchmarkCorpus {
-  id        String          @id @default(cuid())
-  name      String // e.g. "coding"
-  version   Int             @default(1)
-  source    String // e.g. "HumanEval+MBPP+SWE-bench"
-  active    Boolean         @default(false) // exactly one active corpus is screened against
-  itemCount Int             @default(0) @map("item_count")
+  id         String             @id @default(cuid())
+  name       String // e.g. "coding"
+  version    Int                @default(1)
+  source     String // e.g. "HumanEval+MBPP+SWE-bench"
+  active     Boolean            @default(false) // exactly one active corpus is screened against
+  itemCount  Int                @default(0) @map("item_count")
   // importing | ready | failed (services/benchmark-corpus.ts). A version
   // becomes `active` only once its import has finished.
-  status     String          @default("ready")
+  status     String             @default("ready")
   error      String?
-  importedAt DateTime?       @map("imported_at")
-  createdAt DateTime        @default(now()) @map("created_at")
-  items     BenchmarkItem[]
+  importedAt DateTime?          @map("imported_at")
+  createdAt  DateTime           @default(now()) @map("created_at")
+  items      BenchmarkItem[]
+  shingles   BenchmarkShingle[]
 
   @@unique([name, version])
   @@map("benchmark_corpora")
@@ -2615,15 +2616,34 @@ model BenchmarkItem {
   // Canonical SHA-256 of the identity fields (same normalizer as dedup).
   canonicalHash String          @map("canonical_hash")
   // Hashes of the problem's 8-token shingles (services/contamination.ts), never
-  // its text. GIN-indexed: screening asks which problems share any shingle.
+  // its text. Screening looks them up through BenchmarkShingle, not here.
   shingles      String[]
   label         String? // e.g. "openai/openai_humaneval HumanEval/12 (problem)"
   corpus        BenchmarkCorpus @relation(fields: [corpusId], references: [id], onDelete: Cascade)
 
   @@index([corpusId])
   @@index([canonicalHash])
-  @@index([shingles], type: Gin)
   @@map("benchmark_items")
+}
+
+// The inverted index contamination screening looks problems up by: one row per
+// shingle per benchmark problem, built from BenchmarkItem.shingles when a
+// corpus is imported (services/benchmark-corpus.ts). The primary key's B-tree
+// on (corpus, shingle) turns a lookup into index probes. A GIN index on the
+// arrays was tried first; the planner never chose it and compared every row
+// instead, which took seconds per item on the real corpus.
+//
+// `itemId` is deliberately not a foreign key: a cascade from benchmark_items
+// would need its own index on item_id, and these rows are only ever written
+// and removed a whole corpus at a time.
+model BenchmarkShingle {
+  corpusId String          @map("corpus_id")
+  shingle  String
+  itemId   String          @map("item_id")
+  corpus   BenchmarkCorpus @relation(fields: [corpusId], references: [id], onDelete: Cascade)
+
+  @@id([corpusId, shingle, itemId])
+  @@map("benchmark_shingles")
 }
 
 model Benchmark {

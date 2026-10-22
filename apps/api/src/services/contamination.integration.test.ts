@@ -24,7 +24,7 @@ import {
   contaminationTokens,
   screenForContamination,
 } from "./contamination.js";
-import { runBenchmarkCorpusImport, startBenchmarkImport } from "./benchmark-corpus.js";
+import { indexBenchmarkShingles, runBenchmarkCorpusImport, startBenchmarkImport } from "./benchmark-corpus.js";
 import { runSubmissionValidation } from "./validation.js";
 import { runSponsorReferenceReviewJob } from "./jobs/sponsor-reference-review.js";
 import { SAMPLE_CONTAMINATION_STAGE } from "./sample-checks.js";
@@ -44,6 +44,9 @@ const PROBLEM_B =
   "Janet's ducks lay sixteen eggs per day. She eats three for breakfast every morning and bakes muffins for her friends " +
   "every day with four. She sells the remainder at the farmers market daily for two dollars per fresh duck egg. How " +
   "much in dollars does she make every day at the farmers market?";
+// Exactly MIN_ITEM_SHINGLES shingles, and a longer one: for "any match over a line decides".
+const SHORT_PROBLEM = Array.from({ length: 17 }, (_, i) => `shortword${i}`).join(" ");
+const LONG_PROBLEM = Array.from({ length: 47 }, (_, i) => `longword${i}`).join(" ");
 
 let app: FastifyInstance;
 let corpusId = "";
@@ -81,9 +84,15 @@ beforeAll(async () => {
   });
   corpusId = corpus.id;
   corpusIds.push(corpus.id);
-  for (const [label, text] of [["TEST/A (problem)", PROBLEM_A], ["TEST/B (question)", PROBLEM_B]] as const) {
+  for (const [label, text] of [
+    ["TEST/A (problem)", PROBLEM_A],
+    ["TEST/B (question)", PROBLEM_B],
+    ["TEST/C (short)", SHORT_PROBLEM],
+    ["TEST/D (long)", LONG_PROBLEM],
+  ] as const) {
     await prisma.benchmarkItem.create({ data: { corpusId, label, ...benchmarkFingerprint(text)! } });
   }
+  await indexBenchmarkShingles(corpusId);
 
   const contributor = await signup("contam");
   userId = contributor.id;
@@ -193,6 +202,18 @@ describe("screening", () => {
     expect(result.decision).toBe("review_required");
     expect(result.containment).toBeGreaterThanOrEqual(0.3);
     expect(result.containment).toBeLessThan(0.6);
+  });
+
+  it("rejects on any confident match, even when a shorter problem is closer by share", async () => {
+    // 8 of the short problem's 10 shingles (80%, but too few to reject on) and
+    // 30 of the long one's 40 (75%, a confident copy).
+    const shortPart = SHORT_PROBLEM.split(" ").slice(0, 15).join(" ");
+    const longPart = LONG_PROBLEM.split(" ").slice(0, 37).join(" ");
+    const result = await screenForContamination({ instruction: `${shortPart} and then ${longPart}` });
+    expect(result.decision).toBe("rejected");
+    expect(result.containment).toBe(0.75);
+    expect((result.detail.matches as unknown[])[0]).toMatchObject({ label: "TEST/D (long)", sharedShingles: 30 });
+    expect((result.detail.matches as unknown[])[1]).toMatchObject({ label: "TEST/C (short)", sharedShingles: 8 });
   });
 
   it("passes original work, and says when an item is too short to screen", async () => {
@@ -316,6 +337,10 @@ describe("importing a corpus", () => {
 
     const imported = await prisma.benchmarkCorpus.findUniqueOrThrow({ where: { id: corpus.id } });
     expect(imported).toMatchObject({ status: "ready", active: true, itemCount: 2 });
+    const fingerprints = await prisma.benchmarkItem.findMany({ where: { corpusId: corpus.id }, select: { shingles: true } });
+    expect(await prisma.benchmarkShingle.count({ where: { corpusId: corpus.id } })).toBe(
+      fingerprints.reduce((total, item) => total + item.shingles.length, 0),
+    );
     expect((await prisma.benchmarkCorpus.findUniqueOrThrow({ where: { id: corpusId } })).active).toBe(false);
     expect(await prisma.benchmarkItem.findMany({ where: { corpusId: corpus.id }, select: { label: true }, orderBy: { label: "asc" } })).toEqual([
       { label: "openai/openai_humaneval HumanEval/0 (problem)" },
@@ -337,6 +362,7 @@ describe("importing a corpus", () => {
     expect(failed).toMatchObject({ status: "failed", active: false, itemCount: 0 });
     expect(failed.error).toMatch(/HTTP 503/);
     expect(await prisma.benchmarkItem.count({ where: { corpusId: corpus.id } })).toBe(0);
+    expect(await prisma.benchmarkShingle.count({ where: { corpusId: corpus.id } })).toBe(0);
     expect((await prisma.benchmarkCorpus.findUniqueOrThrow({ where: { id: corpusId } })).active).toBe(true);
   }, 30_000);
 });
