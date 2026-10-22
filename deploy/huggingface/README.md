@@ -6,24 +6,26 @@ Hub's YAML front matter).
 
 ## `databounty/` → `databounty-io/DataBounty`
 
-A Gradio Space that shows DataBounty's live pools, published datasets, karma leaderboard and public profiles, and
-doubles as a read-only MCP server at `/gradio_api/mcp/`. Its **Contribute** tab signs a person in to DataBounty and
-adds items as them. It has no database: browsing reads only DataBounty's public API and the Hub, and a signed-in
-person's tokens live in the process's memory. It runs on free `cpu-basic` hardware.
+A Space that shows DataBounty's live pools, published datasets, karma leaderboard and public profiles, and lets a
+person sign in to DataBounty and add items to open pools as themselves. Its page is a small web app drawn like the
+DataBounty console (`web/`: `index.html`, `app.css`, `app.js`, no build step), backed by a JSON API (`webapi.py`).
+Gradio is mounted underneath only for the read-only MCP server at `/gradio_api/mcp/`. It has no database: browsing
+reads only DataBounty's public API and the Hub, and a signed-in person's tokens live in the process's memory. It runs
+on free `cpu-basic` hardware.
 
-How the Contribute tab signs people in:
+How signing in works:
 
 - The Space is an OAuth public client of DataBounty's MCP authorization server. It identifies itself with a Client
   ID Metadata Document it serves at `/oauth/client-metadata.json`, so there is nothing to register and no client
-  secret. `app.py` adds that route, `/oauth/start` and `/oauth/callback` to a FastAPI app and mounts Gradio on it.
+  secret. `app.py` serves that route, `/oauth/start` and `/oauth/callback` next to the page and its API.
 - The page keeps a random secret in its sessionStorage and starts at `/oauth/start?n=<sha256 of the secret>`.
   `/oauth/start` refuses anything but a start from the Space's own page (`Sec-Fetch-Site: same-origin`), then puts the
   `state`, the PKCE verifier and the hash in a signed, httpOnly, `SameSite=Lax` cookie. `/oauth/callback` only accepts
   a `state` that matches it, so nobody can start a sign-in and have someone else finish it into their session.
 - The callback holds the new session under the hash for five minutes, and the page claims it with the secret itself
-  on its next load (`account.claim_sign_in`). The page keeps the session handle in its own storage, encrypted by
-  Gradio (`gr.BrowserState`, created outside the tabs so it loads on every tab), because inside the huggingface.co
-  embed the Space's cookies are third-party and most browsers withhold them.
+  (`POST /api/session/claim`, `account.claim_sign_in`). The page keeps the session handle in its localStorage and
+  sends it as a bearer token, because inside the huggingface.co embed the Space's cookies are third-party and most
+  browsers withhold them. The handle is random; the tokens it stands for never leave the Space.
 - At its own address the Space signs in in the same tab. The embed's sandbox allows windows but not leaving the page
   (no `allow-top-navigation`), and DataBounty's sign-in pages refuse to be framed, so there it opens a small sign-in
   window and polls `/oauth/status?n=<hash>` until the sign-in finishes. The window closes itself.
@@ -57,7 +59,8 @@ would be uploaded with it.
 | `DATABOUNTY_CLIENT_ID` | the metadata-document URL. Local runs only; see below. |
 
 **Run locally**: `pip install "gradio[mcp]==6.30.0"`, then `python app.py` from `databounty/`. It serves on
-`GRADIO_SERVER_PORT` (default 7860). On Windows, set `PYTHONUTF8=1` first: Gradio prints an emoji at start-up that a
+`GRADIO_SERVER_PORT` (default 7860). The page's CSS and script are loaded with a `?v=` version in `web/index.html`;
+bump it when you change them, so browsers fetch the new files. On Windows, set `PYTHONUTF8=1` first: Gradio prints an emoji at start-up that a
 cp1252 console cannot encode.
 
 To sign in locally, point the Space at a local API (`DATABOUNTY_MCP_URL=http://localhost:4000/mcp`,

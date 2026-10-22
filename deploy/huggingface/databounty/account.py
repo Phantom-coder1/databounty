@@ -22,9 +22,9 @@ opens a small sign-in window, which closes itself when done.
 3. The callback holds the new session under the hash for a few minutes
    (hold_sign_in). The page that started it claims it with the secret itself
    (claim_sign_in): nobody else has that secret, and it is never in a URL.
-4. The page keeps the session handle in its own storage, encrypted by Gradio
-   (gr.BrowserState), not in a cookie: inside the embed, the Space's cookies are
-   third-party and most browsers withhold them.
+4. The page keeps the session handle in its own localStorage and sends it as a
+   bearer token (webapi.py), not in a cookie: inside the embed, the Space's cookies
+   are third-party and most browsers withhold them.
 
 Starting a sign-in keeps nothing on the server, so hitting /oauth/start repeatedly
 cannot crowd out real sign-ins. Tokens never reach the browser: it holds only a
@@ -81,8 +81,6 @@ COOKIE_SECURE = SPACE_URL.startswith("https://")
 # Signs the login cookie. A Space secret keeps sign-ins in flight valid across a
 # restart; without one, a restart only means starting that sign-in again.
 _COOKIE_KEY = (os.environ.get("SPACE_COOKIE_SECRET") or secrets.token_urlsafe(32)).encode()
-# Encrypts the session handle the page keeps in its own storage (gr.BrowserState).
-BROWSER_STATE_SECRET = os.environ.get("SPACE_COOKIE_SECRET") or secrets.token_urlsafe(32)
 
 _client = httpx.Client(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT})
 

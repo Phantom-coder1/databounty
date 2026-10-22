@@ -46,6 +46,20 @@ class AppMountTest(unittest.TestCase):
         paths = {getattr(route, "path", "") for route in app.app.routes}
         self.assertTrue({"/oauth/start", "/oauth/callback", "/oauth/status", "/oauth/client-metadata.json"} <= paths)
 
+    def test_the_page_its_files_and_its_api_answer_before_gradio(self):
+        from fastapi.testclient import TestClient
+
+        client = TestClient(load_app().app)
+        page = client.get("/")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('id="page"', page.text)
+        self.assertEqual(page.headers["cache-control"], "no-cache")
+        for path in ("/static/app.js", "/static/app.css", "/static/logo.svg"):
+            with self.subTest(path):
+                self.assertEqual(client.get(path).status_code, 200)
+        self.assertEqual(client.get("/api/me").status_code, 401)
+        self.assertEqual(client.get("/api/me").json(), {"error": "Sign in to continue."})
+
 
 @unittest.skipIf(gradio is None, "gradio is not installed")
 class SignInRoutesTest(unittest.TestCase):
@@ -100,11 +114,11 @@ class SignInRoutesTest(unittest.TestCase):
         self.assertIn("window.close()", res.text)
         self.assertTrue(self.account.sign_in_ready(nonce_hash))
 
-    def test_callback_in_the_same_tab_returns_to_contribute(self):
+    def test_callback_in_the_same_tab_returns_to_the_page(self):
         nonce_hash = "d2" * 32
         res = self.callback(False, nonce_hash)
         self.assertEqual(res.status_code, 302)
-        self.assertEqual(res.headers["location"], "/?tab=contribute")
+        self.assertEqual(res.headers["location"], "/")
         self.assertTrue(self.account.sign_in_ready(nonce_hash))
 
     def test_status_says_only_whether_the_sign_in_finished(self):

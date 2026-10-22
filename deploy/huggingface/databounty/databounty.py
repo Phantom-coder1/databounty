@@ -246,6 +246,11 @@ def pool_details(pool_id: str) -> dict[str, Any] | None:
             }
             for field in dataset_type.get("fields") or []
         ],
+        example_items=[
+            sample["fields"]
+            for sample in dataset_type.get("sampleAssets") or []
+            if isinstance(sample, dict) and isinstance(sample.get("fields"), dict) and sample["fields"]
+        ][:3],
         hugging_face_dataset=row.get("huggingFaceDataset"),
     )
     return pool
