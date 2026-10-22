@@ -81,6 +81,50 @@ class SignInTest(unittest.TestCase):
         self.assertRegex(cookie, r"^[A-Za-z0-9_-]+\.[0-9a-f]{64}$")
 
 
+class ClaimTest(unittest.TestCase):
+    """A finished sign-in goes only to the page that started it, which alone holds the secret."""
+
+    def setUp(self):
+        patcher = mock.patch.object(account, "server_metadata", return_value=META)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def secret():
+        nonce = f"page-secret-{time.time_ns()}"
+        return nonce, account._digest(nonce)
+
+    def test_the_login_cookie_carries_the_hash_and_whether_it_runs_in_a_window(self):
+        _, nonce_hash = self.secret()
+        _, cookie = account.begin_sign_in(nonce_hash, popup=True)
+        self.assertEqual(account.login_context(cookie), {"n": nonce_hash, "p": True})
+        self.assertEqual(account.login_context("forged.cookie"), {"n": "", "p": False})
+
+    def test_only_the_secret_claims_the_session_and_only_once(self):
+        nonce, nonce_hash = self.secret()
+        self.assertFalse(account.sign_in_ready(nonce_hash))
+        account.hold_sign_in(nonce_hash, "session-1")
+        self.assertTrue(account.sign_in_ready(nonce_hash))
+        self.assertIsNone(account.claim_sign_in(nonce_hash))  # the hash alone claims nothing
+        self.assertIsNone(account.claim_sign_in("another page's secret"))
+        self.assertEqual(account.claim_sign_in(nonce), "session-1")
+        self.assertIsNone(account.claim_sign_in(nonce))
+        self.assertFalse(account.sign_in_ready(nonce_hash))
+
+    def test_an_unclaimed_sign_in_expires(self):
+        nonce, nonce_hash = self.secret()
+        account.hold_sign_in(nonce_hash, "session-2")
+        later = time.time() + account.CLAIM_TTL_SECONDS + 1
+        with mock.patch.object(account.time, "time", return_value=later):
+            self.assertFalse(account.sign_in_ready(nonce_hash))
+            self.assertIsNone(account.claim_sign_in(nonce))
+
+    def test_ready_answers_only_for_a_hash(self):
+        for value in ("", "../etc/passwd", "A" * 64, "a" * 63):
+            with self.subTest(value):
+                self.assertFalse(account.sign_in_ready(value))
+
+
 class TransportTest(unittest.TestCase):
     def test_reads_plain_json_and_one_event_sse(self):
         body = '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{}"}]}}'

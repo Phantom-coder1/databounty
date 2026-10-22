@@ -6,20 +6,30 @@ whose endpoints it reads from the server's own metadata document. It identifies
 itself with a Client ID Metadata Document that it serves (/oauth/client-metadata.json),
 so there is no registration step and no client secret to keep.
 
-Sign-in runs in the Space's own tab, never inside the huggingface.co embed.
-GET /oauth/start sets a short-lived, signed, httpOnly cookie holding the `state`
-and the PKCE verifier, then sends the browser to DataBounty. GET /oauth/callback
-accepts only a `state` matching that cookie. The cookie is what ties the callback
-to the browser that started it.
-Without it, someone could start a sign-in, send the link to someone else, and get
-that person's token in their own Space session. Inside the embed, the Space's
-cookies are third-party and never sent, so the Space asks visitors to open it in
-its own tab first.
+How a sign-in finishes where it started. Opened at its own address, the Space signs in
+in the same tab. Inside the huggingface.co embed it can't: the embed may open windows
+but not leave the page, and DataBounty's sign-in pages refuse to be framed. There it
+opens a small sign-in window, which closes itself when done.
+
+1. The page keeps a random secret in its own sessionStorage and starts the sign-in
+   with only the secret's hash (/oauth/start?n=<hash>). /oauth/start refuses a start
+   that didn't come from the Space's own page (Sec-Fetch-Site), so nobody can hand
+   someone a link that signs *them* in for the sender to collect.
+2. /oauth/start sets a short-lived, signed, httpOnly cookie holding the `state`, the
+   PKCE verifier and the hash, then sends the browser to DataBounty. The callback
+   accepts only a `state` matching that cookie, so it ties the round trip to the
+   browser that started it.
+3. The callback holds the new session under the hash for a few minutes
+   (hold_sign_in). The page that started it claims it with the secret itself
+   (claim_sign_in): nobody else has that secret, and it is never in a URL.
+4. The page keeps the session handle in its own storage, encrypted by Gradio
+   (gr.BrowserState), not in a cookie: inside the embed, the Space's cookies are
+   third-party and most browsers withhold them.
 
 Starting a sign-in keeps nothing on the server, so hitting /oauth/start repeatedly
-cannot crowd out real sign-ins. Tokens never reach the browser. The browser holds
-only a random session id in an httpOnly cookie. The access and refresh tokens stay in this process's memory, so a
-restart signs everyone out; nothing is written to disk.
+cannot crowd out real sign-ins. Tokens never reach the browser: it holds only a
+random session handle. The access and refresh tokens stay in this process's memory,
+so a restart signs everyone out; nothing is written to disk.
 """
 
 from __future__ import annotations
@@ -30,6 +40,7 @@ import hmac
 import itertools
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -54,12 +65,14 @@ REDIRECT_URI = f"{SPACE_URL}/oauth/callback"
 # them, upload files for file fields, and set up a handle on first sign-in.
 SCOPES = "read contribute artifact account"
 
-SESSION_COOKIE = "dbspace_session"
 LOGIN_COOKIE = "dbspace_login"
 LOGIN_TTL_SECONDS = 10 * 60
 SESSION_IDLE_SECONDS = 30 * 24 * 60 * 60
 MAX_SESSIONS = 20_000
 REFRESH_MARGIN_SECONDS = 60
+# How long a finished sign-in waits for the page that started it to claim it.
+CLAIM_TTL_SECONDS = 5 * 60
+_NONCE_HASH = re.compile(r"^[0-9a-f]{64}$")
 TIMEOUT = httpx.Timeout(20.0, connect=10.0)
 USER_AGENT = "databounty-space/1.0 (+https://huggingface.co/spaces/databounty-io/DataBounty)"
 
@@ -68,6 +81,8 @@ COOKIE_SECURE = SPACE_URL.startswith("https://")
 # Signs the login cookie. A Space secret keeps sign-ins in flight valid across a
 # restart; without one, a restart only means starting that sign-in again.
 _COOKIE_KEY = (os.environ.get("SPACE_COOKIE_SECRET") or secrets.token_urlsafe(32)).encode()
+# Encrypts the session handle the page keeps in its own storage (gr.BrowserState).
+BROWSER_STATE_SECRET = os.environ.get("SPACE_COOKIE_SECRET") or secrets.token_urlsafe(32)
 
 _client = httpx.Client(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT})
 
@@ -170,13 +185,21 @@ def _unseal(value: str | None) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def begin_sign_in() -> tuple[str, str]:
-    """A new sign-in: (the URL to send the browser to, the login cookie that binds it to this browser)."""
+def valid_nonce_hash(value: str | None) -> bool:
+    """Whether `value` looks like the SHA-256 hex digest a page sends to /oauth/start."""
+    return bool(value) and bool(_NONCE_HASH.match(value))
+
+
+def begin_sign_in(nonce_hash: str = "", popup: bool = False) -> tuple[str, str]:
+    """A new sign-in: (the URL to send the browser to, the login cookie that binds it to this browser).
+
+    `nonce_hash` is the hash of the starting page's secret, kept for claim_sign_in; `popup`
+    says the sign-in runs in its own small window, which the callback closes when done."""
     meta = server_metadata()
     state = secrets.token_urlsafe(32)
     verifier = secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-    cookie = _seal({"s": state, "v": verifier, "t": int(time.time())})
+    cookie = _seal({"s": state, "v": verifier, "t": int(time.time()), "n": nonce_hash, "p": bool(popup)})
     query = urlencode(
         {
             "response_type": "code",
@@ -244,6 +267,45 @@ def complete_sign_in(query: dict[str, str], login_cookie: str | None) -> str:
             _sessions.pop(oldest, None)
         _sessions[_digest(session_id)] = session
     return session_id
+
+
+def login_context(login_cookie: str | None) -> dict[str, Any]:
+    """What /oauth/start recorded about this sign-in: the page's secret hash and whether it runs in a window."""
+    started = _unseal(login_cookie) or {}
+    return {"n": str(started.get("n") or ""), "p": bool(started.get("p"))}
+
+
+_pending: dict[str, tuple[str, float]] = {}
+
+
+def hold_sign_in(nonce_hash: str, session_id: str) -> None:
+    """Keep a finished sign-in for the page that started it to claim."""
+    now = time.time()
+    with _store_lock:
+        for key in [k for k, (_, at) in _pending.items() if now - at > CLAIM_TTL_SECONDS]:
+            _pending.pop(key, None)
+        _pending[nonce_hash] = (session_id, now)
+
+
+def sign_in_ready(nonce_hash: str | None) -> bool:
+    """Whether a sign-in started with this hash has finished. Says nothing else, so it is safe to poll."""
+    if not valid_nonce_hash(nonce_hash):
+        return False
+    with _store_lock:
+        entry = _pending.get(nonce_hash)
+    return bool(entry) and time.time() - entry[1] <= CLAIM_TTL_SECONDS
+
+
+def claim_sign_in(nonce: str | None) -> str | None:
+    """The session a finished sign-in left for the page holding `nonce`, once. Only the page
+    that started the sign-in has the nonce; everyone else has at most its hash."""
+    if not nonce:
+        return None
+    with _store_lock:
+        entry = _pending.pop(_digest(nonce), None)
+    if not entry or time.time() - entry[1] > CLAIM_TTL_SECONDS:
+        return None
+    return entry[0]
 
 
 def session_for(session_id: str | None) -> Session | None:

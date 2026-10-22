@@ -113,98 +113,65 @@ def render_overview() -> str:
 
 
 HOW_IT_WORKS = f"""
-### How DataBounty works
+### How it works
 
-1. **A sponsor requests a dataset.** An operator reviews the request and opens a **pool**: a field contract, a target size, a licence and the karma paid per accepted item.
-2. **Contributors submit items** from the dashboard, from this Space's **Contribute** tab, or through an AI agent connected over MCP.
-3. **Automated checks run on every item**: exact and near-duplicate detection, an AI-attribution scan and, where the dataset type has tests, sandboxed execution.
-4. **Human validators review the work.** Contributors earn karma only for accepted items; validators earn karma for their audits.
-5. **Finished datasets are published to the Hub** under [{db.HF_ORG}](https://huggingface.co/{db.HF_ORG}), with contributor credit in the dataset card and a `manifest.json`.
+1. **A sponsor asks for a dataset**, and DataBounty opens a **pool** for it: what each item needs, how many are wanted, and the karma each accepted item earns.
+2. **You add items**: on the **Contribute** tab here, on databounty.io, or through an AI agent over MCP.
+3. **Every item is checked automatically**, for duplicates and disclosed AI help, and its tests run in a sandbox where the dataset has them.
+4. **People review it**, and you earn karma for each item they accept.
+5. **Finished datasets are published** under [{db.HF_ORG}](https://huggingface.co/{db.HF_ORG}) on the Hub, crediting every contributor.
 """
 
 
 # --- Open pools ----------------------------------------------------------------------
 
-POOL_COLUMNS = ["Pool", "Dataset type", "Difficulty", "Accepted / target", "Progress", "Karma per item", "Licence"]
-POOL_TYPES = ["markdown", "str", "str", "str", "str", "str", "str"]
-
-
 def render_pools(query: str, domain: str, difficulty: str):
     try:
         pools = db.open_pools(query or "", _choice(domain, ANY_DOMAIN), _choice(difficulty, ANY_DIFFICULTY))
     except db.UpstreamError as exc:
-        return pd.DataFrame(columns=POOL_COLUMNS), gr.update(choices=[], value=None), str(exc)
-    rows = [
-        {
-            "Pool": f"[{_md(pool['title'])}]({pool['page_url']})",
-            "Dataset type": pool["dataset_type"],
-            "Difficulty": pool["difficulty"].capitalize() or "—",
-            "Accepted / target": f"{pool['accepted_items']:,} / {pool['target_items']:,}",
-            "Progress": f"{pool['progress_pct']:.1f}%" if pool["progress_pct"] is not None else "—",
-            "Karma per item": _num(pool["karma_per_accepted_item"]),
-            "Licence": pool["license"] or "—",
-        }
-        for pool in pools
-    ]
+        return gr.update(choices=[], value=None), f'<div class="db-notice db-warn">{_e(exc)}</div>'
     count = len(pools)
     summary = (
-        f"**{count}** open pool{'' if count == 1 else 's'} match. *Karma per item* is what a contributor "
-        "earns for each accepted item. Pick a pool below for its field contract."
+        f"{count} open pool{'' if count == 1 else 's'}. Choose one to see what it needs."
         if count
         else "No open pool matches those filters."
     )
-    choices = [(pool["title"], pool["id"]) for pool in pools]
-    return (
-        pd.DataFrame(rows, columns=POOL_COLUMNS),
-        gr.update(choices=choices, value=choices[0][1] if choices else None),
-        summary,
-    )
+    choices = [(contribute.pool_card_label(pool), pool["id"]) for pool in pools]
+    return gr.update(choices=choices, value=None), f'<div class="db-muted">{_e(summary)}</div>'
 
 
-def render_pool(pool_id: str | None) -> str:
+def show_pool(pool_id: str | None):
+    """Open one pool's card in place of the grid on the Open pools tab."""
+    card, go = render_pool(pool_id)
+    return card, go, gr.update(visible=not pool_id), gr.update(visible=bool(pool_id))
+
+
+def render_pool(pool_id: str | None):
+    """The pool card for the Open pools tab, and whether to offer "Contribute to this pool"."""
     if not pool_id:
-        return ""
+        return "", gr.update(visible=False)
     try:
         pool = db.pool_details(pool_id)
     except (ValueError, db.UpstreamError) as exc:
-        return str(exc)
+        return f'<div class="db-notice db-warn">{_e(exc)}</div>', gr.update(visible=False)
     if pool is None:
-        return "That pool is no longer listed."
-    fields = "\n".join(
-        f"| `{_md(field['key'])}` | {_md(field['label'])} | {_md(field['role'])} | {'yes' if field['required'] else 'no'} |"
-        for field in pool["fields"]
+        return '<div class="db-notice db-warn">That pool is no longer listed.</div>', gr.update(visible=False)
+    accepted, target = pool["accepted_items"] or 0, pool["target_items"] or 0
+    facts = [f"{accepted:,} of {target:,} accepted"]
+    if pool["license"]:
+        facts.append(f"licence {_e(pool['license'])}")
+    facts.append(f'<a href="{_e(pool["page_url"])}" target="_blank" rel="noopener">View on databounty.io</a>')
+    card = contribute.pool_summary_html(
+        title=pool["title"],
+        type_name=pool["dataset_type"],
+        difficulty=pool["difficulty"],
+        karma=pool["karma_per_accepted_item"],
+        wanted=max(0, target - accepted),
+        language=pool.get("language") or "",
+        field_labels=[field["label"] or field["key"] for field in pool["fields"]],
+        note=f'<div class="db-muted db-facts">{" · ".join(facts)}</div>',
     )
-    people = " · ".join(
-        part
-        for part in (
-            f"{pool['contributors']:,} contributors" if isinstance(pool["contributors"], int) else "",
-            f"{pool['validators']:,} validators" if isinstance(pool["validators"], int) else "",
-        )
-        if part
-    )
-    audit = f"{pool['audit_coverage_pct']}% of items" if pool["audit_coverage_pct"] is not None else "—"
-    return f"""
-### [{_md(pool['title'])}]({pool['page_url']})
-
-{_md(pool['description'])}
-
-| | |
-|---|---|
-| Dataset type | {_md(pool['dataset_type'])} · {_md(pool['trust_tier'].replace('_', ' ')) or '—'} |
-| Progress | {pool['accepted_items']:,} accepted of {pool['target_items']:,} · {pool['in_review_items']:,} waiting on human review |
-| Karma | {_num(pool['karma_per_accepted_item'])} per accepted item · {_num(pool['validator_karma_per_audited_item'])} per audited item for validators |
-| Human audit coverage | {audit} |
-| People | {people or '—'} |
-| Licence | {_md(pool['license']) or '—'} |
-
-**Field contract**: every item supplies these fields.
-
-| Field | Label | Role | Required |
-|---|---|---|---|
-{fields}
-
-[**Contribute to this pool →**]({pool['contribute_url']}) &nbsp;·&nbsp; [View it on databounty.io]({pool['page_url']})
-"""
+    return card, gr.update(visible=True)
 
 
 # --- Published datasets ------------------------------------------------------------------
@@ -534,7 +501,7 @@ HEADER = f"""
   </div>
 </div>
 <div class="db-cta">
-  <a class="db-btn db-btn-primary" href="{_e(db.APP_URL)}/contributor/" target="_blank" rel="noopener">Start contributing →</a>
+  <a class="db-btn db-btn-primary" href="?tab=contribute" target="_self">Start contributing →</a>
   <a class="db-btn" href="{_e(db.APP_URL)}/sponsor/create/" target="_blank" rel="noopener">Request a dataset</a>
   <a class="db-btn" href="https://huggingface.co/{_e(db.HF_ORG)}" target="_blank" rel="noopener">Datasets on the Hub</a>
   <a class="db-btn" href="{REPO_URL}" target="_blank" rel="noopener">Source (Apache-2.0)</a>
@@ -542,10 +509,8 @@ HEADER = f"""
 """
 
 FOOTER = (
-    f"Browsing is anonymous: the tabs read DataBounty's public API, refreshed every "
-    f"{int(db.CACHE_TTL_SECONDS // 60) or 1} minutes or so. If you sign in to contribute, your DataBounty "
-    f"tokens stay in this Space's memory only, never on disk, and signing out revokes them. Validating and "
-    f"requesting datasets happen on [databounty.io]({db.SITE_URL})."
+    "Browsing needs no account. When you sign in, your DataBounty sign-in stays in this Space's memory only, "
+    f"and signing out ends it. Reviewing and requesting datasets happen on [databounty.io]({db.SITE_URL})."
 )
 
 CSS = f"""
@@ -570,7 +535,133 @@ CSS = f"""
 .db-tiers {{ display: flex; flex-wrap: wrap; gap: 10px 22px; margin-top: 8px; }}
 .db-dot {{ display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }}
 .db-note {{ padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border-color-primary); }}
+.db-muted {{ color: var(--body-text-color-subdued); font-size: .9rem; }}
+.db-hero h2 {{ margin: 8px 0 4px; font-size: 1.4rem; }}
+.db-hero p {{ margin: 0 0 4px; color: var(--body-text-color-subdued); }}
+.db-signin {{ max-width: 280px; }}
+.db-account {{ display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }}
+.db-avatar {{ width: 38px; height: 38px; border-radius: 50%; background: {LIME}; color: #0b0b0b; display: grid;
+  place-items: center; font-weight: 800; }}
+.db-who span {{ color: var(--body-text-color-subdued); margin-left: 4px; }}
+.db-account-row {{ align-items: center; }}
+.db-chip {{ display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: .82rem;
+  border: 1px solid var(--border-color-primary); background: var(--background-fill-secondary); white-space: nowrap; }}
+.db-chip-accent {{ background: {LIME}; border-color: {LIME}; color: #0b0b0b; font-weight: 600; }}
+.db-chips {{ display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 12px; }}
+.db-step {{ margin: 10px 0 2px; font-size: 1.05rem; }}
+.db-card, .db-pool, .db-detail {{ border: 1px solid var(--border-color-primary); border-radius: 14px; padding: 16px 18px;
+  background: var(--block-background-fill); }}
+.db-card h3, .db-pool h3, .db-detail h3 {{ margin: 0; }}
+.db-card p {{ margin: 4px 0 0; color: var(--body-text-color-subdued); }}
+.db-pool h3 {{ font-size: 1.3rem; margin-top: 2px; }}
+.db-pool-type {{ color: var(--body-text-color-subdued); font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; }}
+.db-submit-what {{ font-size: .93rem; }}
+.db-submit-what span {{ color: var(--body-text-color-subdued); margin-right: 6px; }}
+.db-tip {{ margin-top: 6px; font-size: .93rem; color: var(--body-text-color-subdued); }}
+.db-facts {{ margin-top: 10px; }}
+.db-field-head {{ display: flex; flex-direction: column; gap: 2px; margin: 6px 0 -4px; }}
+.db-field-head span {{ color: var(--body-text-color-subdued); font-size: .86rem; }}
+.db-notice {{ padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border-color-primary); margin: 6px 0; }}
+.db-ok {{ border-color: rgba(34, 197, 94, .5); background: rgba(34, 197, 94, .08); }}
+.db-warn {{ border-color: rgba(245, 158, 11, .55); background: rgba(245, 158, 11, .08); }}
+.db-bad {{ border-color: rgba(239, 68, 68, .55); background: rgba(239, 68, 68, .08); }}
+.db-review {{ border-color: rgba(168, 85, 247, .5); background: rgba(168, 85, 247, .08); }}
+.db-info {{ background: var(--background-fill-secondary); }}
+.db-link-btn {{ align-self: flex-start; max-width: fit-content; }}
+button.db-quiet {{ background: transparent !important; border: 1px solid var(--border-color-primary) !important;
+  color: var(--body-text-color) !important; box-shadow: none !important; }}
+button.db-quiet:hover {{ border-color: #84cc16 !important; }}
+.db-tight {{ margin-bottom: -12px !important; }}
+.db-pool-grid .wrap {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }}
+.db-pool-grid label {{ margin: 0; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--border-color-primary);
+  background: var(--block-background-fill); cursor: pointer; box-shadow: none; align-items: flex-start; }}
+.db-pool-grid label:hover {{ border-color: #84cc16; }}
+.db-pool-grid label.selected {{ border-color: #84cc16; box-shadow: 0 0 0 2px rgba(182, 255, 28, .6); }}
+.db-pool-grid input {{ display: none; }}
+.db-pool-grid label span {{ display: block; margin: 0; white-space: pre-line; color: var(--body-text-color); font-weight: 650;
+  font-size: .96rem; line-height: 1.45; }}
+.db-pool-grid label span::first-line {{ color: var(--body-text-color-subdued); font-weight: 400; font-size: .8rem; }}
+.db-table, .db-table table, .db-table td, .db-table th, .db-table .cell-wrap {{ font-family: var(--font) !important; }}
+#db-mode .wrap {{ display: inline-flex; gap: 4px; padding: 4px; border-radius: 12px; width: fit-content;
+  background: var(--background-fill-secondary); border: 1px solid var(--border-color-primary); }}
+#db-mode label {{ margin: 0; padding: 6px 16px; border-radius: 9px; border: none; background: transparent; box-shadow: none;
+  cursor: pointer; }}
+#db-mode label.selected {{ background: var(--block-background-fill); box-shadow: 0 1px 3px rgba(0, 0, 0, .15); font-weight: 600; }}
+#db-mode input {{ display: none; }}
+#db-mode label span {{ margin: 0; }}
+.db-example pre {{ white-space: pre-wrap; word-break: break-word; background: var(--background-fill-secondary);
+  border-radius: 8px; padding: 10px 12px; font-size: .85rem; margin: 4px 0 12px; }}
+.db-example-label {{ font-weight: 600; font-size: .9rem; }}
+.db-detail-head {{ display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }}
+.db-badge {{ padding: 3px 10px; border-radius: 999px; font-size: .82rem; font-weight: 600; white-space: nowrap;
+  border: 1px solid transparent !important; }}
+.db-badge.db-ok {{ background: rgba(34, 197, 94, .16); color: #15803d; }}
+.db-badge.db-warn {{ background: rgba(245, 158, 11, .2); color: #b45309; }}
+.db-badge.db-bad {{ background: rgba(239, 68, 68, .16); color: #b91c1c; }}
+.db-badge.db-review {{ background: rgba(168, 85, 247, .16); color: #7e22ce; }}
+.db-badge.db-info {{ background: rgba(59, 130, 246, .14); color: #1d4ed8; }}
+.dark .db-badge.db-ok, .dark .db-check-pass .db-check-icon {{ color: #4ade80; }}
+.dark .db-badge.db-warn, .dark .db-check-note .db-check-icon {{ color: #fbbf24; }}
+.dark .db-badge.db-bad, .dark .db-check-fail .db-check-icon {{ color: #f87171; }}
+.dark .db-badge.db-review {{ color: #c084fc; }}
+.dark .db-badge.db-info {{ color: #60a5fa; }}
+.db-checks {{ list-style: none; padding: 0; margin: 14px 0 8px; display: grid; gap: 10px; }}
+.db-check {{ display: flex; gap: 10px; align-items: flex-start; }}
+.db-check-icon {{ width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-weight: 800;
+  font-size: .8rem; flex: none; }}
+.db-check-pass .db-check-icon {{ background: rgba(34, 197, 94, .2); color: #15803d; }}
+.db-check-fail .db-check-icon {{ background: rgba(239, 68, 68, .2); color: #b91c1c; }}
+.db-check-wait .db-check-icon {{ background: var(--background-fill-secondary); color: var(--body-text-color-subdued); }}
+.db-check-note .db-check-icon {{ background: rgba(245, 158, 11, .22); color: #b45309; }}
+.db-detail .db-btn {{ display: inline-block; margin-top: 10px; }}
 """
+
+# Sign-in, started from the page (see account.py for the whole flow). The page keeps a random
+# secret in its own sessionStorage and sends only its hash. At its own address the Space signs
+# in in the same tab; inside the huggingface.co embed, which may open windows but not leave the
+# page, it opens a small sign-in window and checks every 1.5 s whether the sign-in finished.
+SIGN_IN_JS = """
+<script>
+(() => {
+  const KEY = "databounty-signin";
+  const hex = (buf) => Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, "0")).join("");
+  const say = (text) => { const el = document.getElementById("db-signin-note"); if (el) el.textContent = text; };
+  const backHere = () => { const url = new URL(location.href); url.searchParams.set("tab", "contribute"); location.replace(url); };
+  async function start() {
+    const bytes = crypto.getRandomValues(new Uint8Array(32));
+    const nonce = btoa(String.fromCharCode(...bytes)).replace(/[+/=]/g, (c) => ({ "+": "-", "/": "_", "=": "" })[c]);
+    try { sessionStorage.setItem(KEY, nonce); } catch (e) {
+      say("This browser blocked the page's storage, so sign-in can't finish here. Open the Space at its own address and try again.");
+      return;
+    }
+    const n = hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(nonce)));
+    if (window.top === window.self) { location.assign("/oauth/start?n=" + n); return; }
+    const w = 520, h = 720;
+    const left = Math.max(0, (window.screenX || 0) + ((window.outerWidth || w) - w) / 2);
+    const top = Math.max(0, (window.screenY || 0) + ((window.outerHeight || h) - h) / 2);
+    const win = window.open("/oauth/start?popup=1&n=" + n, "databounty-signin", `popup=yes,width=${w},height=${h},left=${left},top=${top}`);
+    if (!win) { say("Your browser blocked the sign-in window. Allow pop-ups for this page, then press Sign in again."); return; }
+    say("Finish signing in in the window that opened. This page updates by itself.");
+    const deadline = Date.now() + 10 * 60 * 1000;
+    const check = async () => {
+      if (Date.now() > deadline) { say("Sign-in timed out. Press Sign in to try again."); return; }
+      try {
+        const res = await fetch("/oauth/status?n=" + n, { cache: "no-store" });
+        if (res.ok && (await res.json()).ready) { backHere(); return; }
+      } catch (e) {}
+      setTimeout(check, 1500);
+    };
+    setTimeout(check, 1500);
+  }
+  window.databountySignIn = () => { start().catch(() => say("Sign-in couldn't start. Try again.")); };
+})();
+</script>
+"""
+# Hands the page's sign-in secret to contribute.claim_view on load, then forgets it. Only the
+# secret goes through this script: the stored session reaches account_view untouched, after
+# Gradio has read it back from the page's storage.
+READ_NONCE_JS = "(n) => { let v = ''; try { v = sessionStorage.getItem('databounty-signin') || ''; } catch (e) {} return [v]; }"
+FORGET_NONCE_JS = "() => { try { sessionStorage.removeItem('databounty-signin'); } catch (e) {} }"
 
 THEME = gr.themes.Citrus(
     primary_hue=gr.themes.colors.lime,
@@ -583,13 +674,18 @@ with gr.Blocks(title="DataBounty", delete_cache=(3600, 3600)) as demo:
     with gr.Column(elem_id="col-container"):
         gr.HTML(HEADER)
 
+        contribute.build_state()
         with gr.Tabs() as tabs:
             with gr.Tab("Overview", id="overview"):
                 overview = gr.HTML('<div class="db-k">Loading live totals…</div>')
                 gr.Markdown(HOW_IT_WORKS)
 
             with gr.Tab("Contribute", id="contribute"):
-                contribute_outputs = contribute.build()
+                contribute.build()
+
+            with gr.Tab("My submissions", id="mine", visible=False) as subs_tab:
+                contribute.build_submissions()
+            contribute.ui.subs_tab = subs_tab
 
             with gr.Tab("Open pools", id="pools"):
                 with gr.Row(equal_height=True):
@@ -606,17 +702,13 @@ with gr.Blocks(title="DataBounty", delete_cache=(3600, 3600)) as demo:
                         [ANY_DIFFICULTY, *db.DIFFICULTIES], value=ANY_DIFFICULTY, show_label=False, container=False, scale=1
                     )
                     pool_search = gr.Button("Search", variant="primary", scale=1)
-                pools_summary = gr.Markdown()
-                pools_table = gr.Dataframe(
-                    headers=POOL_COLUMNS,
-                    datatype=POOL_TYPES,
-                    interactive=False,
-                    wrap=True,
-                    max_height=460,
-                    show_label=False,
-                )
-                pool_pick = gr.Dropdown(label="Pool details", choices=[], interactive=True)
-                pool_detail = gr.Markdown()
+                with gr.Column() as browse_col:
+                    pools_summary = gr.HTML()
+                    pool_pick = gr.Radio(choices=[], show_label=False, container=False, elem_classes=["db-pool-grid"], interactive=True)
+                with gr.Column(visible=False) as pool_col:
+                    pool_back = gr.Button("← All pools", size="sm", elem_classes=["db-link-btn", "db-quiet"])
+                    pool_detail = gr.HTML()
+                    pool_go = gr.Button("Contribute to this pool", variant="primary", visible=False, elem_classes=["db-signin"])
 
             with gr.Tab("Published datasets", id="datasets"):
                 datasets_table = gr.Dataframe(
@@ -687,10 +779,21 @@ with gr.Blocks(title="DataBounty", delete_cache=(3600, 3600)) as demo:
         gr.Markdown(FOOTER, elem_classes=["db-k"])
 
     pool_inputs = [pool_query, pool_domain, pool_difficulty]
-    pool_outputs = [pools_table, pool_pick, pools_summary]
+    pool_outputs = [pool_pick, pools_summary]
     for trigger in (pool_search.click, pool_query.submit, pool_domain.change, pool_difficulty.change):
         trigger(render_pools, pool_inputs, pool_outputs, api_visibility="private")
-    pool_pick.change(render_pool, pool_pick, pool_detail, api_visibility="private")
+    pool_pick.input(show_pool, pool_pick, [pool_detail, pool_go, browse_col, pool_col], api_visibility="private")
+    pool_back.click(
+        lambda: (gr.update(value=None), gr.update(visible=True), gr.update(visible=False)),
+        None,
+        [pool_pick, browse_col, pool_col],
+        api_visibility="private",
+    )
+    contribute.wire()
+    ui = contribute.ui
+    pool_go.click(lambda: gr.Tabs(selected="contribute"), None, tabs, api_visibility="private").then(
+        contribute.open_pool, [pool_pick, ui.session, ui.pools_state], ui.pool_picker, api_visibility="private"
+    ).then(contribute.load_contract, [ui.pool_picker, ui.session], contribute.contract_outputs(), api_visibility="private")
 
     board_inputs = [board_tier, board_query]
     for trigger in (board_tier.change, board_query.submit):
@@ -704,7 +807,9 @@ with gr.Blocks(title="DataBounty", delete_cache=(3600, 3600)) as demo:
     demo.load(render_datasets, None, [datasets_table, datasets_snippet], api_visibility="private")
     demo.load(render_leaderboard, board_inputs, board_table, api_visibility="private")
     demo.load(render_tools, None, tools_table, api_visibility="private")
-    demo.load(contribute.account_view, None, contribute_outputs, api_visibility="private")
+    demo.load(contribute.claim_view, ui.nonce, ui.session, js=READ_NONCE_JS, api_visibility="private").then(
+        contribute.account_view, ui.session, contribute.account_outputs(), api_visibility="private"
+    ).then(None, js=FORGET_NONCE_JS)
     demo.load(contribute.select_tab, None, tabs, api_visibility="private")
 
     gr.api(get_platform_stats, api_name="get_platform_stats")
@@ -726,13 +831,20 @@ server = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 NO_STORE = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
 
 
-def _sign_in_page(message: str, status: int) -> HTMLResponse:
+def _sign_in_page(message: str, status: int, *, popup: bool = False, title: str = "Sign-in didn't finish", close: bool = False) -> HTMLResponse:
+    back = (
+        '<p><button onclick="window.close()" style="font:inherit;padding:.5rem 1rem;border-radius:8px;border:1px solid #ccc;'
+        'background:#b6ff1c;font-weight:600;cursor:pointer">Close this window</button></p>'
+        if popup
+        else '<p><a href="/?tab=contribute">Back to the Space</a></p>'
+    )
     body = (
         '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-        "<title>DataBounty sign-in</title>"
+        f"<title>{_e(title)}</title>"
         '<body style="font-family:system-ui,sans-serif;max-width:34rem;margin:15vh auto;padding:0 1rem;line-height:1.5">'
-        f"<h1 style=\"font-size:1.3rem\">Sign-in didn't finish</h1><p>{_e(message)}</p>"
-        '<p><a href="/?tab=contribute">Back to the Space</a></p></body>'
+        f'<h1 style="font-size:1.3rem">{_e(title)}</h1><p>{_e(message)}</p>{back}'
+        + ("<script>setTimeout(() => window.close(), 800)</script>" if close else "")
+        + "</body>"
     )
     return HTMLResponse(body, status_code=status, headers=NO_STORE)
 
@@ -744,11 +856,16 @@ def oauth_client_metadata() -> JSONResponse:
 
 
 @server.get("/oauth/start")
-def oauth_start():
+def oauth_start(request: Request, n: str = "", popup: str = ""):
+    in_window = popup == "1"
+    # Only a sign-in the Space's own page started: a link from anywhere else could otherwise
+    # sign someone in for the sender to collect (see account.py).
+    if not account.valid_nonce_hash(n) or request.headers.get("sec-fetch-site") != "same-origin":
+        return _sign_in_page("Start signing in from the Space's Contribute tab.", 400, popup=in_window)
     try:
-        url, login_cookie = account.begin_sign_in()
+        url, login_cookie = account.begin_sign_in(n, in_window)
     except (account.SignInError, httpx.HTTPError, ValueError):
-        return _sign_in_page("DataBounty's sign-in service didn't answer. Try again in a minute.", 503)
+        return _sign_in_page("DataBounty's sign-in service didn't answer. Try again in a minute.", 503, popup=in_window)
     response = RedirectResponse(url, status_code=302, headers=NO_STORE)
     response.set_cookie(
         account.LOGIN_COOKIE,
@@ -764,25 +881,34 @@ def oauth_start():
 
 @server.get("/oauth/callback")
 def oauth_callback(request: Request):
+    login_cookie = request.cookies.get(account.LOGIN_COOKIE)
+    context = account.login_context(login_cookie)
+    in_window = context["p"]
     try:
-        session_id = account.complete_sign_in(dict(request.query_params), request.cookies.get(account.LOGIN_COOKIE))
+        session_id = account.complete_sign_in(dict(request.query_params), login_cookie)
+        if not account.valid_nonce_hash(context["n"]):
+            raise account.SignInError("Start signing in from the Space's Contribute tab.")
     except account.SignInError as exc:
-        response = _sign_in_page(str(exc), 400)
+        response = _sign_in_page(str(exc), 400, popup=in_window)
     except (httpx.HTTPError, ValueError):
-        response = _sign_in_page("DataBounty's sign-in service didn't answer. Start again from the Space.", 503)
+        response = _sign_in_page("DataBounty's sign-in service didn't answer. Start again from the Space.", 503, popup=in_window)
     else:
-        response = RedirectResponse("/?tab=contribute", status_code=302, headers=NO_STORE)
-        response.set_cookie(
-            account.SESSION_COOKIE,
-            session_id,
-            max_age=account.SESSION_IDLE_SECONDS,
-            path="/",
-            httponly=True,
-            secure=account.COOKIE_SECURE,
-            samesite="lax",
-        )
+        # The page that started this claims the session with its secret (account.claim_sign_in).
+        account.hold_sign_in(context["n"], session_id)
+        if in_window:
+            response = _sign_in_page(
+                "You can close this window. The Space updates by itself.", 200, popup=True, title="You're signed in", close=True
+            )
+        else:
+            response = RedirectResponse("/?tab=contribute", status_code=302, headers=NO_STORE)
     response.delete_cookie(account.LOGIN_COOKIE, path="/oauth")
     return response
+
+
+@server.get("/oauth/status")
+def oauth_status(n: str = "") -> JSONResponse:
+    # Only "has this sign-in finished": claiming it needs the secret the hash came from.
+    return JSONResponse({"ready": account.sign_in_ready(n)}, headers=NO_STORE)
 
 
 app = gr.mount_gradio_app(
@@ -794,6 +920,7 @@ app = gr.mount_gradio_app(
     css=CSS,
     favicon_path=str(HERE / "assets" / "logo.svg"),
     max_file_size="100mb",
+    head=SIGN_IN_JS,
     # Spaces set GRADIO_SSR_MODE, and in SSR mode Gradio starts a Node server on
     # the Space's one public port, which uvicorn below must own.
     ssr_mode=False,

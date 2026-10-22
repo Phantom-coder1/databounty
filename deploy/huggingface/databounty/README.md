@@ -37,24 +37,27 @@ submission and human validators review the results. Finished datasets are publis
 - **Contribute**: sign in to DataBounty and add items to an open pool, then follow them through validation. Add
   items one at a time from a form built from the pool's fields, or upload a JSONL, JSON, CSV or TSV file and review
   it row by row first. Rows that would be refused are flagged before anything is sent.
-- **Open pools**: every dataset currently accepting contributions, with its field contract and the karma paid per accepted item.
+- **Open pools**: every dataset currently accepting contributions, with what each item needs and the karma it earns.
 - **Published datasets**: DataBounty releases on the Hub, with download counts.
 - **Leaderboard** and **Contributor profile**: public karma standings. Private profiles, and any field a member hides, are never shown.
 - **For agents (MCP)**: connect Claude, Cursor, VS Code or ChatGPT to DataBounty's own MCP server.
 
 ## Contributing from the Space
 
-Sign-in opens in a new tab on databounty.io, where you can use any of its sign-in options and then approve the
-Space. The Space asks for four permissions: read pools and your own items, contribute items, upload files for file
-fields, and set up your account on first sign-in. You can untick any of them, but the Space can't contribute without
-*contribute*.
+Press **Sign in to contribute** and sign in with your DataBounty account, then approve the Space. On the Space's
+own page, sign-in happens in the same tab. On the huggingface.co page, a small sign-in window opens and closes itself
+when you're done, and the page signs you in where you are. The Space asks for four permissions: read pools and your
+own items, contribute items, upload files for file fields, and set up your account on first sign-in. You can untick
+any of them, but the Space can't contribute without *contribute*.
 
-- DataBounty takes items only from accounts with a verified email and a public handle. The Space walks you through
-  both on first sign-in. Claiming a handle makes your profile public at `databounty.io/<handle>` straight away.
-- Sign-in always happens in the Space's own tab. Inside the huggingface.co page, the Space's cookies are blocked as
-  third-party, so the Space opens in a tab of its own to sign you in.
-- Your DataBounty tokens stay in the Space's memory and are never written to disk or sent to your browser. Signing
-  out revokes them. A restart of the Space signs everyone out.
+Then pick a pool, and add one item with the form or many at once from a file (there's a template to start from).
+Each pool shows an example item when it has one, and its full requirements one click away. **My submissions**
+shows where each item stands, check by check.
+
+- DataBounty takes items only from accounts with a verified email and a public username. The Space walks you through
+  both on first sign-in. Choosing a username makes your profile public at `databounty.io/<username>` straight away.
+- Your DataBounty tokens stay in the Space's memory and are never written to disk or sent to your browser, which
+  keeps only an encrypted session handle. Signing out revokes the tokens. A restart of the Space signs everyone out.
 - Revisions, disputes and validating other people's items happen on [databounty.io](https://databounty.io).
 
 ## Use it from an agent

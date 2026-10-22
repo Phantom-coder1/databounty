@@ -16,10 +16,17 @@ How the Contribute tab signs people in:
 - The Space is an OAuth public client of DataBounty's MCP authorization server. It identifies itself with a Client
   ID Metadata Document it serves at `/oauth/client-metadata.json`, so there is nothing to register and no client
   secret. `app.py` adds that route, `/oauth/start` and `/oauth/callback` to a FastAPI app and mounts Gradio on it.
-- `/oauth/start` puts the `state` and the PKCE verifier in a signed, httpOnly, `SameSite=Lax` cookie, and
-  `/oauth/callback` only accepts a `state` that matches it. That cookie is what stops someone from starting a sign-in
-  and getting another person's token into their own session. It only works in the Space's own tab, so sign-in always
-  opens there.
+- The page keeps a random secret in its sessionStorage and starts at `/oauth/start?n=<sha256 of the secret>`.
+  `/oauth/start` refuses anything but a start from the Space's own page (`Sec-Fetch-Site: same-origin`), then puts the
+  `state`, the PKCE verifier and the hash in a signed, httpOnly, `SameSite=Lax` cookie. `/oauth/callback` only accepts
+  a `state` that matches it, so nobody can start a sign-in and have someone else finish it into their session.
+- The callback holds the new session under the hash for five minutes, and the page claims it with the secret itself
+  on its next load (`account.claim_sign_in`). The page keeps the session handle in its own storage, encrypted by
+  Gradio (`gr.BrowserState`, created outside the tabs so it loads on every tab), because inside the huggingface.co
+  embed the Space's cookies are third-party and most browsers withhold them.
+- At its own address the Space signs in in the same tab. The embed's sandbox allows windows but not leaving the page
+  (no `allow-top-navigation`), and DataBounty's sign-in pages refuse to be framed, so there it opens a small sign-in
+  window and polls `/oauth/status?n=<hash>` until the sign-in finishes. The window closes itself.
 - Tool calls use the stateless MCP protocol (`2026-07-28`) against `https://console.databounty.io/mcp`, so there is
   no MCP session to expire.
 
