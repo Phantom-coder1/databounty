@@ -640,8 +640,11 @@ SIGN_IN_JS = """
     const left = Math.max(0, (window.screenX || 0) + ((window.outerWidth || w) - w) / 2);
     const top = Math.max(0, (window.screenY || 0) + ((window.outerHeight || h) - h) / 2);
     const win = window.open("/oauth/start?popup=1&n=" + n, "databounty-signin", `popup=yes,width=${w},height=${h},left=${left},top=${top}`);
-    if (!win) { say("Your browser blocked the sign-in window. Allow pop-ups for this page, then press Sign in again."); return; }
-    say("Finish signing in in the window that opened. This page updates by itself.");
+    // huggingface.co serves its page with Cross-Origin-Opener-Policy: same-origin, so the window
+    // opens but this frame gets no handle to it (null). Null is not "blocked": wait either way.
+    say(win
+      ? "Finish signing in in the window that opened. This page updates by itself."
+      : "Finish signing in in the sign-in window. This page updates by itself. No window? Allow pop-ups for this page and press Sign in again.");
     const deadline = Date.now() + 10 * 60 * 1000;
     const check = async () => {
       if (Date.now() > deadline) { say("Sign-in timed out. Press Sign in to try again."); return; }
