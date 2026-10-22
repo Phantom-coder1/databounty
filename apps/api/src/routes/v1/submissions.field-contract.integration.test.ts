@@ -14,12 +14,12 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { BountyKind, BountyStatus, DatasetTypeStatus, GenerationMethod, SubmissionStatus } from "@prisma/client";
+import { BountyKind, BountyStatus, DatasetTypeStatus, GenerationMethod, Prisma, SubmissionStatus } from "@prisma/client";
 import { buildApp } from "../../app.js";
 import { prisma } from "../../lib/prisma.js";
 import { tools } from "../../mcp/tools.js";
 import { McpToolError } from "../../mcp/core/errors.js";
-import { createPoolSubmission } from "../../services/submissions.js";
+import { computeDedupeKey, createPoolSubmission } from "../../services/submissions.js";
 import { requireDisposableDatabase } from "../../test-support/require-disposable-database.js";
 
 requireDisposableDatabase();
@@ -66,6 +66,26 @@ async function createPool(withDatasetType: boolean) {
   });
   bountyIds.push(bounty.id);
   return bounty.id;
+}
+
+/** A submission already sent back for fixing, created directly so that no
+ * validation job is queued for it: the suite shares one job queue, and a job
+ * run from another test file would move the row out of a revisable status
+ * while this file is still asserting on it. */
+async function revisable(status: SubmissionStatus, payload: Record<string, unknown>, title: string) {
+  const row = await prisma.submission.create({
+    data: {
+      bountyId,
+      contributorUserId: userId,
+      title,
+      payloadJson: payload as Prisma.InputJsonValue,
+      generationMethod: GenerationMethod.human,
+      dedupeKey: computeDedupeKey(payload),
+      status,
+    },
+    select: { id: true },
+  });
+  return row.id;
 }
 
 async function submissionCount(pool = bountyId) {
@@ -214,15 +234,7 @@ describe("REST intake refuses items that break the pool's field contract", () =>
   });
 
   it("POST /v1/submissions/:id/revise refuses a non-conforming correction without spending a revision attempt", async () => {
-    const created = await app.inject({
-      method: "POST",
-      url: "/v1/submissions",
-      headers: { cookie, origin: ORIGIN },
-      payload: { bountyId, title: "Item to revise", payloadJson: item("revise") },
-    });
-    expect(created.statusCode).toBe(201);
-    const submissionId = created.json().submission.id as string;
-    await prisma.submission.update({ where: { id: submissionId }, data: { status: SubmissionStatus.needs_fixes } });
+    const submissionId = await revisable(SubmissionStatus.needs_fixes, item("revise"), "Item to revise");
 
     const refused = await app.inject({
       method: "POST",
@@ -275,14 +287,7 @@ describe("MCP intake refuses items that break the pool's field contract", () => 
   });
 
   it("revise_submission fails the same way, before an attempt is reserved", async () => {
-    const submission = await createPoolSubmission({
-      bountyId,
-      contributorUserId: userId,
-      title: "Agent item to revise",
-      payloadJson: item("mcp-revise"),
-      generationMethod: GenerationMethod.ai_assisted,
-    });
-    await prisma.submission.update({ where: { id: submission.id }, data: { status: SubmissionStatus.flagged } });
+    const submission = { id: await revisable(SubmissionStatus.flagged, item("mcp-revise"), "Agent item to revise") };
 
     await expect(
       tool("revise_submission").call(
