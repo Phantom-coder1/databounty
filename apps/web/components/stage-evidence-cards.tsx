@@ -166,6 +166,55 @@ export function AiAttributionEvidenceCard({ result }: { result?: ApiValidationRe
 }
 
 /**
+ * Benchmark contamination (services/contamination.ts on the API): is this item
+ * copied from a public benchmark? Read from `detailJson`, like its siblings,
+ * since `outcome` doesn't reach every client: `contaminationDecision` when the
+ * item was screened, `status` and `reason` when it wasn't (switched off, or no
+ * corpus imported), which the shared decoder shows as a hold, never a pass.
+ */
+export function ContaminationEvidenceCard({ result }: { result?: ApiValidationResult }) {
+  if (!result) return null;
+  const detail = (result.detailJson ?? {}) as Record<string, unknown>;
+  const decision = typeof detail.contaminationDecision === "string" ? detail.contaminationDecision : undefined;
+  const reason = typeof detail.reason === "string" ? detail.reason : null;
+  const corpus = (detail.corpus ?? null) as { name?: string; version?: number } | null;
+  // The closest problems are only worth naming when one actually matched.
+  const matches =
+    decision === "rejected" || decision === "review_required"
+      ? ((Array.isArray(detail.matches) ? detail.matches : []) as Array<{ label?: string | null; containment?: number }>)
+      : [];
+
+  return (
+    <CardShell title="Benchmark contamination" pill={statusPill(result)}>
+      <Row label="closest benchmark overlap" value={pct(result.score)} />
+      <Row
+        label="decision"
+        value={
+          decision === "rejected"
+            ? <span className="text-danger-strong">rejected — copied from a public benchmark</span>
+            : decision === "review_required"
+              ? <span className="text-amber-700">flagged for validator review</span>
+              : decision === "accepted"
+                ? <span className="text-accent-strong">accepted — no benchmark match</span>
+                : <span className="text-amber-700">not screened</span>
+        }
+      />
+      {corpus?.name && <Row label="corpus" value={`${corpus.name} v${corpus.version ?? "?"}`} />}
+      {matches.map((match, index) => (
+        <Row
+          key={`${match.label ?? "match"}-${index}`}
+          label={index === 0 ? "matched problem" : "also resembles"}
+          value={<span className="break-all">{match.label ?? "unlabelled problem"} · {pct(match.containment)}</span>}
+        />
+      ))}
+      {reason && (
+        <p className="mt-2 border-t border-line-soft pt-3 text-[11.5px] leading-relaxed text-ink-soft">{reason}</p>
+      )}
+    </CardShell>
+  );
+}
+
+/**
  * LLM quality-review evidence — the ONLY card in this file that deliberately
  * renders when `result` is `undefined`.
  *
@@ -382,6 +431,7 @@ export function ExecutionProviderStrip({ result }: { result?: ApiValidationResul
 const SAMPLE_CHECK_LABELS: Record<string, string> = {
   sponsor_sample_record_count: "one example per file",
   sponsor_sample_schema: "matches the dataset's fields",
+  sponsor_sample_contamination: "not copied from a public benchmark",
   sponsor_sample_similarity: "different from your other samples",
   sponsor_sample_execution: "runs in the sandbox",
   sponsor_sample_llm_review: "machine review",

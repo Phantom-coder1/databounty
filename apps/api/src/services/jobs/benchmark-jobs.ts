@@ -17,14 +17,15 @@
  *
  * PORT DIVERGENCE (one, deliberate, documented): v1's source-eligibility gate
  * requires BOTH a passed `execution` and a passed `contamination_check`
- * ValidationResult. This rebuild removed external-corpus plagiarism screening
- * from the pipeline entirely (see the `ValidationResult.stage` and
- * `SubmissionStatus.contamination_check` comments in prisma/schema.prisma — no
- * code path writes that stage any more), so porting that clause verbatim would
- * make EVERY release permanently ineligible. The equivalent live screening
- * stage here is `dedupe` (v1's own name for it), so that is what is required alongside
- * `execution`. This keeps the gate real (a release still cannot be built from
- * unscreened items) instead of trading a fail-closed check for a vacuous one.
+ * ValidationResult. No code path here writes a `contamination_check` stage,
+ * so porting that clause verbatim would make EVERY release permanently
+ * ineligible. The equivalent live screening stage here is `dedupe` (v1's own
+ * name for it), so that is what is required alongside `execution`. This keeps
+ * the gate real (a release still cannot be built from unscreened items)
+ * instead of trading a fail-closed check for a vacuous one. Benchmark
+ * contamination screening (the `contamination` stage) is not required on top:
+ * a source must be `accepted`, which an item that stage rejected never is,
+ * and items accepted before the stage existed carry no row for it at all.
  */
 import { createHash } from "node:crypto";
 import {

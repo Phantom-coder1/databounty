@@ -45,7 +45,9 @@ import { getArtifactData } from "../storage.js";
 import { openRouterConfigured, reviewSubmissionWithLlm } from "../llm-client.js";
 import { enqueueJob, workspaceKeyForUser } from "../jobs.js";
 import { contractFieldsOf, itemProblems, problemText } from "../item-contract.js";
+import { activeBenchmarkCorpus, screenForContamination } from "../contamination.js";
 import {
+  SAMPLE_CONTAMINATION_STAGE,
   SAMPLE_EXECUTION_STAGE,
   SAMPLE_LLM_REVIEW_STAGE,
   SAMPLE_RECORD_COUNT_STAGE,
@@ -58,6 +60,7 @@ import { splitDelimited } from "./bulk-source-parse.js";
 // here for the callers that already import them from this job.
 export {
   HARD_SAMPLE_STAGES,
+  SAMPLE_CONTAMINATION_STAGE,
   SAMPLE_EXECUTION_STAGE,
   SAMPLE_LLM_REVIEW_STAGE,
   SAMPLE_RECORD_COUNT_STAGE,
@@ -433,6 +436,35 @@ async function recordSchemaCheck(
   return payload;
 }
 
+/** Bump when how a sample is screened changes. */
+export const SAMPLE_CONTAMINATION_CHECK_VERSION = 1;
+
+/**
+ * Is the sample copied from a public benchmark (services/contamination.ts)?
+ * Contributors copy samples, so a contaminated sample spreads into every item
+ * modelled on it. A confident match fails the sample (a hard check); a weaker
+ * one passes with the match noted for the reviewer. With no corpus imported,
+ * or screening switched off, it records that nothing was screened, never a
+ * pass. Versioned by corpus version, so importing a new corpus re-screens.
+ */
+async function recordContaminationCheck(artifact: Artifact, sample: unknown) {
+  const corpus = await activeBenchmarkCorpus();
+  const handlerVersion = `contamination:${SAMPLE_CONTAMINATION_CHECK_VERSION}:${corpus ? `${corpus.id}@${corpus.version}` : "none"}`;
+  if (await stageRecorded(artifact.id, SAMPLE_CONTAMINATION_STAGE, handlerVersion)) return;
+
+  const result = await screenForContamination(sample);
+  const status = result.decision === "rejected" ? "failed" : result.screened ? "passed" : "not_supported";
+  await prisma.artifactProcessingEvent.create({
+    data: {
+      artifactId: artifact.id,
+      stage: SAMPLE_CONTAMINATION_STAGE,
+      status,
+      handlerVersion,
+      detail: { ...result.detail, outcome: result.outcome, contaminationDecision: result.decision } as Prisma.InputJsonValue,
+    },
+  });
+}
+
 const SAMPLE_EXECUTION_REASONS: Record<string, string> = {
   no_executable_harness: "This dataset type has no sandbox harness, so samples aren't executed. A reviewer checks it directly.",
   no_provider_configured:
@@ -541,6 +573,7 @@ export async function runSponsorReferenceReviewJob(
   const content = textual ? await readBoundedText(artifact.storageKey, SAMPLE_REVIEW_MAX_BYTES) : null;
 
   const checkedPayload = await recordSchemaCheck(artifact, datasetType, content, textual);
+  if (content !== null) await recordContaminationCheck(artifact, checkedPayload ?? content);
 
   if (!textual) {
     if (await llmVerdictRecorded(artifact.id, handlerVersion)) return;

@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { LlmReviewCard } from "./llm-review-card";
-import { AiAttributionEvidenceCard, DedupeEvidenceCard, ExecutionProviderStrip, LlmEvidenceCard, ModalityCheckCard } from "./stage-evidence-cards";
+import {
+  AiAttributionEvidenceCard,
+  ContaminationEvidenceCard,
+  DedupeEvidenceCard,
+  ExecutionProviderStrip,
+  LlmEvidenceCard,
+  ModalityCheckCard,
+} from "./stage-evidence-cards";
 import { fieldRows, stringValue } from "./dynamic-item-fields";
 import { FLAG_REASON_LABELS, humanizeKey, pctOrDash as pct } from "@/lib/format";
 import { Button } from "@/components/ui";
@@ -23,6 +30,7 @@ const isCodeLike = (role?: string) =>
 
 const PIPELINE_LABELS: Record<string, string> = {
   dedupe: "Duplicate check",
+  contamination: "Benchmark contamination",
   ai_attribution: "Automated AI attribution",
   execution: "Sandbox execution",
   llm: "LLM validation",
@@ -53,9 +61,13 @@ export function ValidationPipelineCard({
   // matching the same-day change to LlmEvidenceCard and the contributor
   // submission view's Pipeline component, which this file used to diverge
   // from (this card had no `llmValidationEnabled` prop at all before now).
-  const stages = ["dedupe", "ai_attribution", "execution", "llm", "human_audit"].filter(
+  // `contamination` is shown only when it ran: an item validated before the
+  // stage existed has no row for it, and never will. (A few historical
+  // contracts still list it, so `configured` can't be trusted for it.)
+  const stages = ["dedupe", "contamination", "ai_attribution", "execution", "llm", "human_audit"].filter(
     (stage) => {
       if (stage === "llm" && llmValidationEnabled === false && !latest.has("llm")) return false;
+      if (stage === "contamination") return latest.has(stage);
       return stage === "dedupe" || stage === "ai_attribution" || configured.has(stage) || latest.has(stage) || (stage === "human_audit" && auditItems.length > 0);
     },
   );
@@ -192,6 +204,7 @@ export function SponsorSubmissionDetail({
           )}
 
           <DedupeEvidenceCard result={latestByStage.get("dedupe")} />
+          <ContaminationEvidenceCard result={latestByStage.get("contamination")} />
           <AiAttributionEvidenceCard result={latestByStage.get("ai_attribution")} />
           {/* Rendered even with no `llm` row: a sponsor reading delivered
               evidence must see that the machine quality review did not run,

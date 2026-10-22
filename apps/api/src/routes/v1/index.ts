@@ -15,6 +15,7 @@ import { issueRoutes } from "./issues.js";
 import { notificationRoutes } from "./notifications.js";
 import { adminRoutes } from "./admin.js";
 import { adminCommunityRoutes } from "./admin-community.js";
+import { adminContaminationRoutes } from "./admin-contamination.js";
 import { adminIssueRoutes } from "./admin-issues.js";
 import { adminJobRoutes } from "./admin-jobs.js";
 import { adminArtifactRoutes } from "./admin-artifacts.js";
@@ -54,6 +55,7 @@ export async function v1Routes(app: FastifyInstance) {
   await app.register(notificationRoutes, { prefix: "/notifications" });
   await app.register(adminRoutes, { prefix: "/admin" });
   await app.register(adminCommunityRoutes, { prefix: "/admin" });
+  await app.register(adminContaminationRoutes, { prefix: "/admin" });
   await app.register(adminIssueRoutes, { prefix: "/admin" });
   await app.register(adminJobRoutes, { prefix: "/admin" });
   await app.register(adminArtifactRoutes, { prefix: "/admin" });

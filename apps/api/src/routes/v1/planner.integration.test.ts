@@ -427,8 +427,8 @@ describe("POST /v1/planner/dataset-types/requests — unified contract-integrity
   // (formerly in services/planner.ts): laxer than the one
   // routes/v1/admin-dataset-types.ts uses to gate activation — no
   // schema-then-dedupe ordering rule, no human_audit-last rule, no "at
-  // least one quality/human gate" rule, and it still allowed the
-  // now-removed `contamination` stage. A sponsor-proposed type could pass
+  // least one quality/human gate" rule, and it allowed `contamination`, which
+  // is platform-wide rather than a per-type stage. A sponsor-proposed type could pass
   // here, land in `platform_review`, and only fail later when an admin
   // tried to activate it. Both tests below prove the two checks now agree
   // from proposal time onward.
@@ -437,7 +437,7 @@ describe("POST /v1/planner/dataset-types/requests — unified contract-integrity
     if (createdIds.length) await prisma.datasetType.deleteMany({ where: { id: { in: createdIds } } });
   });
 
-  it("rejects a proposed pipeline naming the removed 'contamination' stage", async () => {
+  it("rejects a proposed pipeline naming 'contamination', which is platform-wide rather than per type", async () => {
     const user = await signupVerified("plannercontam");
     const res = await app.inject({
       method: "POST",
@@ -445,7 +445,7 @@ describe("POST /v1/planner/dataset-types/requests — unified contract-integrity
       headers: { cookie: user.cookie, origin: "http://localhost:3010" },
       payload: {
         name: `Contamination Stage Fixture ${Date.now()}`,
-        description: "A sponsor-proposed type that still names the removed contamination stage.",
+        description: "A sponsor-proposed type that names contamination as a per-type stage.",
         fields: [
           { key: "instruction", label: "Instruction", role: "instruction", required: true },
           { key: "response", label: "Response", role: "rationale", required: true },

@@ -276,10 +276,11 @@ export function pipelineWithPlatformStages(pipeline: string[], opts?: { llmEnabl
   // but `services/validation.ts` never writes a ValidationResult for it —
   // it must never reach display or it renders as a stage that can never
   // resolve. Strip it before augmenting/deduping, regardless of source.
-  // `contamination` is a stale catalog value in a few historical contracts.
-  // External-corpus screening is not implemented and the API rejects it for
-  // new/edited types, so it must never reach a contributor-facing preview as
-  // though it were a real check. Dedupe is the live duplicate-identity stage.
+  // `contamination` is a stale value in a few historical contracts. Benchmark
+  // contamination screening is platform-wide, not part of a type's contract
+  // (the API rejects it in a type's pipeline), and it screens only once an
+  // admin has imported a benchmark corpus, so a contract preview doesn't
+  // promise it; each item's own evidence shows whether it ran.
   const withoutNonRuntimeStages = pipeline.filter((stage) => stage !== "schema" && stage !== "contamination");
   const dedupeIndex = withoutNonRuntimeStages.indexOf("dedupe");
   const insertAt = dedupeIndex >= 0 ? dedupeIndex + 1 : 0;

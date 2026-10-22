@@ -1,10 +1,9 @@
 # DataBounty Community API
 
 Fastify + Prisma + PostgreSQL backend for DataBounty Community: REST + MCP endpoints for sponsors, contributors,
-validators and admins, plus a background worker that runs the validation pipeline (dedup, AI-attribution
-disclosure scan, sandboxed execution, optional LLM review, pool-capacity claim, human audit) and dataset
-publication. External-corpus contamination screening is **not** a stage — it was deliberately removed rather
-than left as a stub that always reported "not attempted".
+validators and admins, plus a background worker that runs the validation pipeline (dedup, contamination
+screening against public benchmarks, AI-attribution disclosure scan, sandboxed execution, optional LLM review,
+pool-capacity claim, human audit) and dataset publication.
 
 See the [top-level README](../../README.md) for the overall four-app architecture, and
 [../../DEPLOYMENT.md](../../DEPLOYMENT.md) for production build/deploy notes.

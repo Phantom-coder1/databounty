@@ -177,7 +177,7 @@ describe("admin dataset-type CRUD", () => {
     expect(patchRes.statusCode).toBe(400);
   });
 
-  it("POST rejects a pipeline naming the removed 'contamination' stage as an unsupported stage, not a silently-ignored one", async () => {
+  it("POST rejects a pipeline naming 'contamination' as an unsupported stage — it is platform-wide (services/contamination.ts), not something a type opts in or out of", async () => {
     const { cookie } = await signupAdmin("dtcontam");
     const suffix = `${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
     const body = newDatasetTypeBody(suffix, {
@@ -197,7 +197,7 @@ describe("admin dataset-type CRUD", () => {
     expect(row).toBeNull();
   });
 
-  it("PATCH also rejects re-adding 'contamination' to an existing type's pipeline", async () => {
+  it("PATCH also rejects adding 'contamination' to an existing type's pipeline", async () => {
     const { cookie } = await signupAdmin("dtcontampatch");
     const suffix = `${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
     const body = newDatasetTypeBody(suffix);

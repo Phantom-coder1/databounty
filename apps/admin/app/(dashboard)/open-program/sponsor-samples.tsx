@@ -67,6 +67,7 @@ interface SponsorExample {
   evidence: {
     recordCount: SponsorExampleEvidence | null;
     schema: SponsorExampleEvidence | null;
+    contamination: SponsorExampleEvidence | null;
     similarity: SponsorExampleEvidence | null;
     execution: SponsorExampleEvidence | null;
     llmReview: SponsorExampleEvidence | null;
@@ -80,6 +81,7 @@ interface SponsorExample {
 const SAMPLE_CHECKS: { key: keyof SponsorExample["evidence"]; label: string; hard: boolean }[] = [
   { key: "recordCount", label: "one example", hard: true },
   { key: "schema", label: "fields", hard: true },
+  { key: "contamination", label: "benchmark copy", hard: true },
   { key: "similarity", label: "near-duplicate", hard: false },
   { key: "execution", label: "sandbox run", hard: true },
   { key: "llmReview", label: "LLM review", hard: false },
@@ -88,6 +90,7 @@ const SAMPLE_CHECKS: { key: keyof SponsorExample["evidence"]; label: string; har
 const CHECK_LABELS: Record<string, string> = {
   sponsor_sample_record_count: "one example",
   sponsor_sample_schema: "fields",
+  sponsor_sample_contamination: "benchmark copy",
   sponsor_sample_execution: "sandbox run",
 };
 

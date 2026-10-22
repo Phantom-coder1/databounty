@@ -86,10 +86,10 @@ export interface TypeField {
  *  `apps/api/src/services/validation.ts` runs them.
  *
  *  Two former members are deliberately gone:
- *  - `"contamination"` — external-corpus plagiarism screening was removed from
- *    the pipeline entirely by owner decision. No code path writes a
- *    `contamination` stage row and there is deliberately no stub standing in
- *    for one, so no public surface may claim it runs.
+ *  - `"contamination"` — screening against public benchmarks is platform-wide,
+ *    not a per-type check, and it screens only once an admin has imported a
+ *    benchmark corpus, so a type's public contract doesn't promise it. Each
+ *    item's evidence shows whether it ran.
  *  - `"schema"` — it survives only in an admin dataset-type allowlist. No code
  *    path executes a schema stage: `DatasetType.fields` is read to build the
  *    execution harness and the LLM prompt, never as a submit-time gate.

@@ -58,6 +58,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/health", label: "System health", icon: "alert" },
       { href: "/execution-health", label: "Execution health", icon: "zap", adminOnly: true },
+      { href: "/contamination", label: "Contamination", icon: "database" },
       { href: "/llm", label: "AI settings", icon: "beaker", adminOnly: true },
       { href: "/audit-logs", label: "Audit & jobs", icon: "shield", adminOnly: true },
       { href: "/settings", label: "Settings", icon: "settings" },

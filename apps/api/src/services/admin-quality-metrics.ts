@@ -25,12 +25,10 @@ import { prisma } from "../lib/prisma.js";
  * `bounty.kind = community` scope. Nothing here is a new metric definition.
  *
  * V1's snapshot carries a fourth number, `contaminationHits` — a count of
- * submissions whose external-corpus plagiarism screening scored at or above
- * 0.8. There is deliberately NO counterpart here: contamination / plagiarism
- * screening was removed from this product per owner decision, so no pipeline
- * stage produces the evidence such a metric would aggregate. A
- * contamination figure on this dashboard would report a check that does not
- * run.
+ * submissions whose contamination screening scored at or above 0.8. It has
+ * no counterpart on this dashboard: contamination screening (the
+ * `contamination` stage, services/contamination.ts) is shown per item and on
+ * the admin Contamination page, not as a rate here.
  *
  * TWO DELIBERATE DEPARTURES FROM V1, both required by this project's
  * trust-honesty invariant (a check that did not run must never be counted as

@@ -101,6 +101,9 @@ export type JobType =
   //     queue payload; the trusted worker resolves them from the DB) ---------
   | "benchmark.version_build"
   | "benchmark.run_evaluation"
+  /** Imports a public-benchmark corpus version for contamination screening
+   * (services/benchmark-corpus.ts). Payload: `{ corpusId }`. */
+  | "benchmark.corpus_import"
   // --- Notifications --------------------------------------------------------
   /** Durable watcher fan-out. Payload: see `WatcherFanoutPayload`. */
   | "notifications.fanout_watchers"
@@ -165,6 +168,7 @@ export interface JobPayloads {
   "profile_source.verify": { profileSourceId: string; checkType: "initial" | "recheck"; verificationKey: string };
   "benchmark.version_build": { benchmarkVersionId: string };
   "benchmark.run_evaluation": { benchmarkRunId: string };
+  "benchmark.corpus_import": { corpusId: string };
   "notifications.fanout_watchers": WatcherFanoutPayload;
   "waitlist.notify_domain_live": { domain: string };
   "agent_issue.purge_expired": Record<string, never>;

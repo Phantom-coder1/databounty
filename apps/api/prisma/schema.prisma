@@ -261,11 +261,11 @@ enum SubmissionStatus {
   draft
   submitted
   duplicate_check
-  // DEPRECATED / unused: external-corpus plagiarism screening was removed
-  // from the pipeline entirely per owner decision (services/validation.ts
-  // never transitions a submission to this status). Kept in the enum rather
-  // than dropped — an enum-value drop is a schema migration this cleanup
-  // does not make; no live row currently holds this status.
+  // DEPRECATED / unused: v1's status for its contamination stage. Today's
+  // screening (services/contamination.ts) runs inside the validation job and
+  // never moves a submission to this status. Kept in the enum rather than
+  // dropped — an enum-value drop is a schema migration this cleanup does not
+  // make; no live row currently holds this status.
   contamination_check
   running_tests
   tests_failed
@@ -2082,11 +2082,10 @@ model Submission {
   duplicateMethod         String?          @map("duplicate_method")
   duplicateOfSubmissionId String?          @map("duplicate_of_submission_id")
   duplicateDecision       String?          @map("duplicate_decision")
-  // DEPRECATED / unused: external-corpus plagiarism screening was removed
-  // from the pipeline entirely per owner decision (services/validation.ts
-  // never writes a non-null value here; verified zero non-null rows in the
-  // dev database). Column kept rather than dropped — dropping it is a
-  // separate, riskier schema migration this cleanup does not make.
+  // Share (0-1) of the closest public-benchmark problem found in this item,
+  // from its latest validation (services/contamination.ts). Null when it was
+  // not screened: switched off, no corpus imported, or validated before the
+  // stage existed. Mirrors the "contamination" ValidationResult row.
   contaminationScore      Float?           @map("contamination_score")
   llmScore                Float?           @map("llm_score")
   revisionCount           Int              @default(0) @map("revision_count")
@@ -2183,7 +2182,7 @@ model SubmissionRevision {
   generationMethod   GenerationMethod @map("generation_method")
   status             SubmissionStatus
   duplicateScore     Float?           @map("duplicate_score")
-  // DEPRECATED / unused — see the matching comment on Submission.contaminationScore.
+  // Submission.contaminationScore at the time a benchmark release snapshotted the item.
   contaminationScore Float?           @map("contamination_score")
   llmScore           Float?           @map("llm_score")
   validationEvidence Json             @map("validation_evidence")
@@ -2203,10 +2202,8 @@ model ValidationResult {
   // submission revision but gets a new attempt number, so it can never erase
   // the prior runner/LLM evidence.
   validationAttempt Int        @default(0) @map("validation_attempt")
-  stage             String // dedupe | ai_attribution | execution | llm | pool_capacity | human_audit
-  // `contamination` appears only on legacy rows: external-corpus plagiarism screening was removed from the pipeline
-  // entirely per owner decision and no code path writes this stage value anymore. (Likewise "contamination_check",
-  // which is a SubmissionStatus enum member rather than a stage value — nothing writes it as a stage either.)
+  stage             String // dedupe | contamination | ai_attribution | execution | llm | pool_capacity | human_audit
+  // ("contamination_check" is a SubmissionStatus enum member, never a stage value.)
   passed            Boolean
   score             Float?
   detailJson        Json?      @map("detail_json") // runner logs, matched neighbours, rubric
@@ -2600,6 +2597,11 @@ model BenchmarkCorpus {
   source    String // e.g. "HumanEval+MBPP+SWE-bench"
   active    Boolean         @default(false) // exactly one active corpus is screened against
   itemCount Int             @default(0) @map("item_count")
+  // importing | ready | failed (services/benchmark-corpus.ts). A version
+  // becomes `active` only once its import has finished.
+  status     String          @default("ready")
+  error      String?
+  importedAt DateTime?       @map("imported_at")
   createdAt DateTime        @default(now()) @map("created_at")
   items     BenchmarkItem[]
 
@@ -2612,13 +2614,15 @@ model BenchmarkItem {
   corpusId      String          @map("corpus_id")
   // Canonical SHA-256 of the identity fields (same normalizer as dedup).
   canonicalHash String          @map("canonical_hash")
-  // k=5 token shingles for MinHash/Jaccard near-match.
+  // Hashes of the problem's 8-token shingles (services/contamination.ts), never
+  // its text. GIN-indexed: screening asks which problems share any shingle.
   shingles      String[]
-  label         String? // e.g. "HumanEval/12"
+  label         String? // e.g. "openai/openai_humaneval HumanEval/12 (problem)"
   corpus        BenchmarkCorpus @relation(fields: [corpusId], references: [id], onDelete: Cascade)
 
   @@index([corpusId])
   @@index([canonicalHash])
+  @@index([shingles], type: Gin)
   @@map("benchmark_items")
 }
 

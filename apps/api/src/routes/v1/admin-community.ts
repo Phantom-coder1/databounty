@@ -28,6 +28,7 @@ import { BUNDLED_LICENSE_IDS, datasetLicense } from "../../lib/publication/licen
 import { publicPublicationsOf, buildApprovedSampleAssets, safeToWriteSampleAssetsFor } from "../../services/bounties.js";
 import { enqueueSponsorReferenceReview } from "../../services/jobs/sponsor-reference-review.js";
 import {
+  SAMPLE_CONTAMINATION_STAGE,
   SAMPLE_EXECUTION_STAGE,
   SAMPLE_LLM_REVIEW_STAGE,
   SAMPLE_RECORD_COUNT_STAGE,
@@ -1534,6 +1535,7 @@ export async function adminCommunityRoutes(app: FastifyInstance) {
           evidence: {
             recordCount: evidenceFor(example.id, SAMPLE_RECORD_COUNT_STAGE),
             schema: evidenceFor(example.id, SAMPLE_SCHEMA_STAGE),
+            contamination: evidenceFor(example.id, SAMPLE_CONTAMINATION_STAGE),
             similarity: evidenceFor(example.id, SAMPLE_SIMILARITY_STAGE),
             execution: evidenceFor(example.id, SAMPLE_EXECUTION_STAGE),
             llmReview: evidenceFor(example.id, SAMPLE_LLM_REVIEW_STAGE),

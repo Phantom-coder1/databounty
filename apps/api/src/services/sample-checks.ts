@@ -14,6 +14,7 @@ import { prisma } from "../lib/prisma.js";
 
 export const SAMPLE_RECORD_COUNT_STAGE = "sponsor_sample_record_count";
 export const SAMPLE_SCHEMA_STAGE = "sponsor_sample_schema";
+export const SAMPLE_CONTAMINATION_STAGE = "sponsor_sample_contamination";
 export const SAMPLE_SIMILARITY_STAGE = "sponsor_sample_similarity";
 export const SAMPLE_EXECUTION_STAGE = "sponsor_sample_execution";
 export const SAMPLE_LLM_REVIEW_STAGE = "sponsor_sample_llm_review";
@@ -22,6 +23,7 @@ export const SAMPLE_LLM_REVIEW_STAGE = "sponsor_sample_llm_review";
 export const SAMPLE_STAGES = [
   SAMPLE_RECORD_COUNT_STAGE,
   SAMPLE_SCHEMA_STAGE,
+  SAMPLE_CONTAMINATION_STAGE,
   SAMPLE_SIMILARITY_STAGE,
   SAMPLE_EXECUTION_STAGE,
   SAMPLE_LLM_REVIEW_STAGE,
@@ -29,8 +31,14 @@ export const SAMPLE_STAGES = [
 
 /** Stages a sample must not have failed to be approved without an override:
  * several examples packed in one file, fields that don't match the dataset
- * type, or the sample's own tests failing in the sandbox. */
-export const HARD_SAMPLE_STAGES: readonly string[] = [SAMPLE_RECORD_COUNT_STAGE, SAMPLE_SCHEMA_STAGE, SAMPLE_EXECUTION_STAGE];
+ * type, a sample copied from a public benchmark, or the sample's own tests
+ * failing in the sandbox. */
+export const HARD_SAMPLE_STAGES: readonly string[] = [
+  SAMPLE_RECORD_COUNT_STAGE,
+  SAMPLE_SCHEMA_STAGE,
+  SAMPLE_CONTAMINATION_STAGE,
+  SAMPLE_EXECUTION_STAGE,
+];
 
 export interface SampleCheck {
   stage: string;

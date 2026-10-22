@@ -18,6 +18,7 @@ import { PublicationStatus } from "@/components/publication-status";
 import { parseDatasetPublication } from "@/lib/publication";
 import {
   AiAttributionEvidenceCard,
+  ContaminationEvidenceCard,
   DedupeEvidenceCard,
   LlmEvidenceCard,
 } from "@/components/stage-evidence-cards";
@@ -905,6 +906,7 @@ export default function AuditReviewView() {
                 return (
                   <div className="mt-4 grid gap-3 lg:grid-cols-2">
                     <DedupeEvidenceCard result={latestByStage.get("dedupe")} />
+                    <ContaminationEvidenceCard result={latestByStage.get("contamination")} />
                     <AiAttributionEvidenceCard result={latestByStage.get("ai_attribution")} />
                     {/* Rendered even with no `llm` row — an auditor deciding this
                         item must be told the machine review never happened, not

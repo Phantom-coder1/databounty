@@ -376,6 +376,32 @@ export const SETTINGS_CATALOG: AdminSettingCatalogEntry[] = [
     defaultValue: 0.8,
   },
   {
+    key: "validation.contamination.enabled",
+    description:
+      "Screens every item against the imported public-benchmark corpus (services/contamination.ts) and rejects " +
+      "one that reproduces a benchmark problem. With no corpus imported the stage records that nothing was " +
+      "screened, never a pass. Import a corpus on the admin Contamination page.",
+    schema: z.boolean(),
+    defaultValue: true,
+  },
+  {
+    key: "validation.contamination.reject_containment",
+    description:
+      "Share of a benchmark problem's text (0-1) found in an item at or above which the item is rejected as " +
+      "contaminated. Also needs at least 10 shared 8-word fragments, so a short problem can't be matched by " +
+      "coincidence. Must stay above validation.contamination.review_containment.",
+    schema: z.number().min(0).max(1),
+    defaultValue: 0.6,
+  },
+  {
+    key: "validation.contamination.review_containment",
+    description:
+      "Share of a benchmark problem's text (0-1) at or above which the match is shown to the human reviewer " +
+      "without rejecting the item. Must stay below validation.contamination.reject_containment.",
+    schema: z.number().min(0).max(1),
+    defaultValue: 0.3,
+  },
+  {
     key: "validation.llm.enabled",
     description:
       "Controls the LLM submission-review stage platform-wide. Off by default: deterministic checks and human " +

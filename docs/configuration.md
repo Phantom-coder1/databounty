@@ -415,6 +415,9 @@ finishes under the value it started with.
 | Key | What it controls |
 |---|---|
 | `validation.dedupe.reject_threshold` | Duplicate score at or above which `duplicate_check` rejects. |
+| `validation.contamination.enabled` | Screening every item against the imported public-benchmark corpus. On by default; until a corpus is imported (admin console, `/contamination`), items record that they were not screened. |
+| `validation.contamination.reject_containment` | Share of a benchmark problem's text (0–1) found in an item at or above which the item is rejected. Default `0.6`. |
+| `validation.contamination.review_containment` | Share at or above which the match is shown to the validator without rejecting the item. Default `0.3`. |
 | `validation.llm.enabled` | The LLM review stage platform-wide. **Off by default** — deterministic checks first. |
 | `submissions.max_revisions` | Revision attempts before final rejection. |
 

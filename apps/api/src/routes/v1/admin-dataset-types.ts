@@ -143,15 +143,14 @@ export function contractIntegrityError(fieldsValue: unknown, verificationValue: 
   const pipeline = Array.isArray(verification.pipeline)
     ? verification.pipeline.filter((stage): stage is string => typeof stage === "string")
     : [];
-  // "contamination" is deliberately NOT in this allowlist — the owner
-  // decided to remove plagiarism/contamination screening from the community
-  // pipeline entirely (no versioned benchmark corpus is wired up in this
-  // environment, and `services/validation.ts` never runs such a stage
-  // regardless of what a type declares). A dataset type naming it here is
-  // now a hard proposal-time and activation-time rejection, not a silently
-  // ignored no-op.
-  // "ai_attribution" is ALSO deliberately NOT in this allowlist, but for the
-  // opposite reason from "contamination": it is a real, always-on stage now
+  // "contamination" is deliberately NOT in this allowlist: screening against
+  // public benchmarks (services/contamination.ts) is platform-wide. It runs on
+  // every submission once an admin has imported a benchmark corpus, whatever
+  // a type declares, so a type must not appear to opt in or out of it. Naming
+  // it here is a hard proposal-time and activation-time rejection, not a
+  // silently ignored no-op.
+  // "ai_attribution" is ALSO deliberately NOT in this allowlist, for the same
+  // reason: it is a real, always-on stage now
   // (`services/ai-attribution.ts`, ported from V1 — a cheap, deterministic,
   // dependency-free text scan for explicit AI-disclosure phrases; no LLM
   // call, no API key). `services/validation.ts` runs it unconditionally on

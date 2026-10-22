@@ -36,7 +36,14 @@ import {
 import { ArtifactList } from "@/components/artifacts";
 import { AutoRefreshControl } from "@/components/auto-refresh";
 import { LlmReviewCard } from "@/components/llm-review-card";
-import { AiAttributionEvidenceCard, DedupeEvidenceCard, ExecutionProviderStrip, LlmEvidenceCard, ModalityCheckCard } from "@/components/stage-evidence-cards";
+import {
+  AiAttributionEvidenceCard,
+  ContaminationEvidenceCard,
+  DedupeEvidenceCard,
+  ExecutionProviderStrip,
+  LlmEvidenceCard,
+  ModalityCheckCard,
+} from "@/components/stage-evidence-cards";
 import { SubmissionAuditHistoryDrawer } from "@/components/sponsor-submission-detail";
 import { fieldRows, payloadFromValues, requiredMissing, stringValue, valuesFromPayload } from "@/components/dynamic-item-fields";
 import { getArtifactProcessingEvents, type ApiArtifact, type ArtifactProcessingEventsResponse } from "@/lib/api-artifacts";
@@ -66,6 +73,7 @@ type StageState = "done" | "current" | "pending" | "blocked" | "failed" | "warn"
 type StageKey =
   | "submitted"
   | "dedupe"
+  | "contamination"
   | "ai_attribution"
   | "execution"
   | "llm"
@@ -90,16 +98,17 @@ type StageKey =
  * dataset type's stored `verification.pipeline` config to literally start
  * with `["schema", "dedupe", ...]`, but that is a config-shape rule only —
  * `services/validation.ts` never emits a `ValidationResult` row with
- * stage `"schema"` (its real stages are `duplicate_check`/`ai_attribution`/
- * `execution`/`llm`/`human_audit`/`pool_capacity`). Showing "schema" here
- * would leave it permanently "pending / blocked" since nothing ever resolves
- * it — the same failure a removed external-corpus stage would cause (there is
- * no corpus wired here, and `services/validation.ts` never produces it).
+ * stage `"schema"` (its real stages are `duplicate_check`/`contamination`/
+ * `ai_attribution`/`execution`/`llm`/`human_audit`/`pool_capacity`). Showing
+ * "schema" here would leave it permanently "pending / blocked" since nothing
+ * ever resolves it. For the same reason "contamination" is left out for an
+ * item validated before that stage existed (see `showContamination`).
  */
 function pipelineStages(): Array<{ key: StageKey; label: string }> {
   return [
     { key: "submitted", label: "Submitted" },
     { key: "dedupe", label: "Duplicate check" },
+    { key: "contamination", label: "Benchmark contamination" },
     { key: "ai_attribution", label: "Automated AI attribution" },
     { key: "execution", label: "Sandboxing" },
     { key: "llm", label: "LLM review" },
@@ -145,7 +154,7 @@ function latestStageResults(results: ApiValidationResult[]): Map<string, ApiVali
  * matched the display-vocabulary `"dedupe"` this list is written in — which is
  * why a genuine duplicate rejection never got its own issue title.
  */
-const GATING_MACHINE_STAGES = ["dedupe", "ai_attribution", "execution", "llm"];
+const GATING_MACHINE_STAGES = ["dedupe", "contamination", "ai_attribution", "execution", "llm"];
 
 function isGatingMachineFailure(result: ApiValidationResult): boolean {
   if (!GATING_MACHINE_STAGES.includes(normalizeValidationStage(result.stage))) return false;
@@ -212,6 +221,8 @@ function shortStageNote(result: ApiValidationResult): string {
   if (status === "not_attempted") return "Not attempted";
   if (status === "requires_configured_corpus" || status === "requires_healthy_corpus") return "Configuration missing";
   if (status === "no_provider_configured") return "Sandbox not configured";
+  if (status === "screening_switched_off") return "Switched off — not screened";
+  if (status === "no_benchmark_corpus") return "Not screened — no benchmark corpus";
   if (status === "no_executable_harness") return "No harness for this type";
   if (status === "all_providers_failed") return "Sandbox unavailable";
   // `pending_llm_review` is written by the LLM stage's else-branch in the
@@ -359,6 +370,15 @@ function Pipeline({
     datasetType?.verification.pipeline ?? validationResults.map((result) => normalizeValidationStage(result.stage)),
   );
   configuredStages.add("ai_attribution");
+  // Contamination screening is platform-wide too. An item validated before
+  // the stage existed has no row and never will, so the step is left out for
+  // it instead of showing a pending dot forever: a finished item, or a later
+  // machine stage, with no contamination row is such an item.
+  configuredStages.add("contamination");
+  const showContamination =
+    latest.has("contamination") ||
+    (!["accepted", "rejected"].includes(status) &&
+      !["ai_attribution", "execution", "llm"].some((stage) => latest.has(stage)));
   const validatorDecided = (auditItems ?? []).some((item) => item.decidedAt != null);
   // `latest` is already keyed by normalized stage, so these lookups hit.
   const hasMachineFailure = GATING_MACHINE_STAGES.some((stage) => {
@@ -387,6 +407,9 @@ function Pipeline({
       return { state: "blocked", note: "Not configured for this dataset type" };
     }
     if (key === "dedupe" && result?.detailJson?.duplicateDecision === "review_required") {
+      return { state: "warn", note: "Needs validator review", evidence: stageEvidence(result) };
+    }
+    if (key === "contamination" && result?.detailJson?.contaminationDecision === "review_required") {
       return { state: "warn", note: "Needs validator review", evidence: stageEvidence(result) };
     }
     if (key === "ai_attribution" && result && !result.passed) {
@@ -536,6 +559,7 @@ function Pipeline({
           instead." */}
       {pipelineStages()
         .filter((stage) => !(stage.key === "llm" && llmEnabled === false))
+        .filter((stage) => stage.key !== "contamination" || showContamination)
         .map((stage) => {
         const view = stageView(stage.key);
         const accepted = stage.key === "final" && view.state === "done";
@@ -1063,6 +1087,7 @@ export default function SubmissionDetailPage() {
           )}
 
           <DedupeEvidenceCard result={latestStageResults(validationResults).get("dedupe")} />
+          <ContaminationEvidenceCard result={latestStageResults(validationResults).get("contamination")} />
           <AiAttributionEvidenceCard result={latestStageResults(validationResults).get("ai_attribution")} />
           {/* Always rendered, even with no `llm` evidence row: a skipped or
               switched-off LLM check used to render nothing at all here, which

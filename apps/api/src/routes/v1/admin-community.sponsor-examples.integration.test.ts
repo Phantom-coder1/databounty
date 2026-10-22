@@ -212,7 +212,14 @@ describe("GET /v1/admin/sponsor-examples", () => {
     });
     // No check ran for this fixture: every one must be honestly null, never
     // defaulted to a pass, and nothing counts as failed.
-    expect(row!.evidence).toEqual({ recordCount: null, schema: null, similarity: null, execution: null, llmReview: null });
+    expect(row!.evidence).toEqual({
+      recordCount: null,
+      schema: null,
+      contamination: null,
+      similarity: null,
+      execution: null,
+      llmReview: null,
+    });
     expect(row!.failedHardChecks).toEqual([]);
   });
 

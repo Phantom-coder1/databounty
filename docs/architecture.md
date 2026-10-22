@@ -75,27 +75,34 @@ the redirect yields a console shell that cannot fetch anything.
 
 ## The validation pipeline
 
-Six stages, in a fixed order hardcoded in `services/validation.ts`. There is **no** per-dataset-type
+Seven stages, in a fixed order hardcoded in `services/validation.ts`. There is **no** per-dataset-type
 pipeline array and no admin toggle for stage order — every stage runs on every submission. Each writes
 an immutable `ValidationResult` row.
 
 | Stage | What it does |
 |---|---|
 | `duplicate_check` | Exact-hash plus near-duplicate detection via MinHash + LSH banding (`SubmissionLshBand`), scoped per pool. Rejection is **per item** — one duplicate does not sink a batch. |
+| `contamination` | Is the item copied from a public benchmark? An item holding 60% or more of a benchmark problem's text is rejected; 30% or more is shown to the validator. Both lines are admin settings. With no benchmark corpus imported it records that the item was not screened, never a pass. |
 | `ai_attribution` | Deterministic, dependency-free scan for **explicit** model or co-author disclosures. Deliberately does *not* infer authorship from writing style, because general-purpose AI-text detectors are not reliable enough to base a penalty on. Neither sponsor nor admin can configure it in or out. |
 | `execution` | Runs the item's own tests in a sandbox. With no sandbox key it records `no_provider_configured` and routes to human review — it never passes an item it could not run. |
 | `llm` | Quality review against a rubric. Unconfigured it records `pending_llm_review` and routes to human audit. **Off by default**, so the honest path is the default path. |
 | `pool_capacity` | Claims one of the pool's finite acceptance slots with a single atomic `UPDATE`, guarded against replay so a retried job cannot flip an already-accepted item to rejected. |
 | `human_audit` | A person decides. |
 
-> **In a default deployment no automated stage can grant final acceptance.** Contamination screening was
-> removed and LLM review is off, so a clean automated pass lands on `accepted_pending_sample` — a
-> non-terminal state — and a human resolves it.
+> **In a default deployment no automated stage can grant final acceptance.** LLM review is off, so a
+> clean automated pass lands on `accepted_pending_sample` — a non-terminal state — and a human resolves it.
 
-External-corpus **contamination screening was deleted rather than left as a stub**. The old stage
-reported "not attempted" for every input regardless, which is worse than no stage. Its
-`contamination_check` status survives in the enum only because dropping an enum value is a migration
-nobody has needed; no live row holds it.
+**Contamination screening** (`services/contamination.ts`) compares an item against public benchmarks:
+HumanEval, MBPP, SWE-bench Lite, GSM8K and DS-1000, imported from the Hugging Face datasets-server by an
+admin (`services/benchmark-corpus.ts`, the `benchmark.corpus_import` job). Text is cut into overlapping
+8-word fragments, and only their hashes are stored (`benchmark_items.shingles`, GIN-indexed), never a
+benchmark's text, so each item costs one indexed lookup. The score is containment: the share of a
+problem's fragments found in the item, which a copy wrapped in the item's own explanation can't dilute.
+A match also needs a minimum number of shared fragments, so a short problem can't match by coincidence.
+Each import builds a new corpus version, and screening switches to it only when every row is in; a
+failed import leaves the version in force. Sponsor samples are screened the same way, as a hard check.
+v1's `contamination_check` status survives in the enum only because dropping an enum value is a
+migration nobody has needed; nothing moves a submission to it and no live row holds it.
 
 ## Pool lifecycle
 
@@ -155,7 +162,7 @@ rather than adding throughput. The queue also has no fairness partitioning: `wor
 every job and nothing reads it, so one tenant's bulk upload occupies the claim slot until its backlog
 drains. Run a single worker until these are addressed.
 
-**26 job types** (the full `JobType` union in `services/jobs.ts`, which a
+**27 job types** (the full `JobType` union in `services/jobs.ts`, which a
 `Record<JobType, number>` in `worker.ts` makes impossible to extend without a
 handler and a lease):
 
@@ -166,7 +173,7 @@ artifact.similarity_check   artifact.purge_expired_uploads
 bulk_source.parse           upload_draft.submit      sponsor_reference.review
 community.publish           community.unpublish
 user.provision              profile_source.verify
-benchmark.version_build     benchmark.run_evaluation
+benchmark.version_build     benchmark.run_evaluation  benchmark.corpus_import
 notifications.fanout_watchers                        waitlist.notify_domain_live
 harness.proof_run           agent_issue.escalate     agent_issue.escalation_sweep
 agent_issue.purge_expired   agent_issue.notify_filed

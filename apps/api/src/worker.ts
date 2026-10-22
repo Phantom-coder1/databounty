@@ -65,6 +65,7 @@ import {
 import { runBulkSourceParseJob } from "./services/jobs/bulk-source-parse.js";
 import { runUploadDraftSubmitJob } from "./services/jobs/upload-draft-submit.js";
 import { runSponsorReferenceReviewJob } from "./services/jobs/sponsor-reference-review.js";
+import { runBenchmarkCorpusImport } from "./services/benchmark-corpus.js";
 import {
   enqueueAgentIssueSweeps,
   purgeExpiredAgentIssues,
@@ -151,6 +152,10 @@ const LEASE_BY_TYPE: Record<JobType, number> = {
   // Runs the sample through the sandbox like an item, so it needs the same
   // worst-case allowance as a validation run, never less than a heavy job.
   "sponsor_reference.review": Math.max(HEAVY_LEASE_MS, VALIDATION_LEASE_MS),
+  // A few dozen page reads from the Hub plus batched inserts. The import gives
+  // itself 8 of these 10 minutes (IMPORT_BUDGET_MS) and fails past that, so
+  // a reclaim never finds the first run still writing.
+  "benchmark.corpus_import": HEAVY_LEASE_MS,
   "community.publish": HEAVY_LEASE_MS,
   "community.unpublish": HEAVY_LEASE_MS,
   "benchmark.version_build": HEAVY_LEASE_MS,
@@ -270,6 +275,14 @@ async function handle(job: JobEnvelope): Promise<void> {
         job.payload as { profileSourceId: string; checkType: "initial" | "recheck"; verificationKey: string }
       );
       return;
+    }
+    case "benchmark.corpus_import": {
+      const payload = job.payload as { corpusId: string };
+      // Never throws for a failed import: it records the failure on the corpus
+      // version, which the admin console shows, and leaves screening on the
+      // version already in force.
+      await runBenchmarkCorpusImport(payload.corpusId);
+      break;
     }
     case "benchmark.version_build": {
       const payload = job.payload as { benchmarkVersionId: string };
