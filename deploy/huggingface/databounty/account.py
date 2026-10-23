@@ -372,9 +372,9 @@ def _rpc_body(text: str) -> dict[str, Any]:
     raise ToolError("DataBounty sent a reply the Space could not read. Try again.")
 
 
-def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = None) -> Any:
-    """Call one DataBounty tool as this session's person, using the stateless MCP protocol:
-    no handshake and no server-side MCP session to expire. Returns the tool's parsed result."""
+def _post_tool(token: str, name: str, arguments: dict[str, Any] | None) -> httpx.Response:
+    """One tools/call to DataBounty's MCP server with this bearer token, in the stateless MCP
+    protocol: no handshake and no server-side MCP session to expire."""
     payload = {
         "jsonrpc": "2.0",
         "id": next(_rpc_ids),
@@ -389,22 +389,52 @@ def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = No
             },
         },
     }
-    for attempt in (1, 2):
-        token = _access_token(session)
+    try:
+        return _client.post(
+            DATABOUNTY_MCP_URL,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json, text/event-stream",
+                "MCP-Protocol-Version": MCP_PROTOCOL,
+                "Mcp-Method": "tools/call",
+                "Mcp-Name": name,
+            },
+        )
+    except httpx.HTTPError as exc:
+        raise ToolError("DataBounty didn't answer in time. Try again in a moment.") from exc
+
+
+def _tool_result(res: httpx.Response) -> Any:
+    """A tool's parsed result, or ToolError with DataBounty's own message. (401 is the caller's.)"""
+    if res.status_code == 429:
+        wait = res.headers.get("Retry-After", "a few")
+        raise ToolError(f"DataBounty is limiting requests right now. Try again in {wait} seconds.")
+    if res.status_code >= 400:
         try:
-            res = _client.post(
-                DATABOUNTY_MCP_URL,
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/json, text/event-stream",
-                    "MCP-Protocol-Version": MCP_PROTOCOL,
-                    "Mcp-Method": "tools/call",
-                    "Mcp-Name": name,
-                },
-            )
-        except httpx.HTTPError as exc:
-            raise ToolError("DataBounty didn't answer in time. Try again in a moment.") from exc
+            detail = res.json()
+            message = detail.get("error_description") or detail.get("message") or detail.get("error")
+        except ValueError:
+            message = None
+        raise ToolError(str(message or f"DataBounty refused the request (HTTP {res.status_code})."))
+    body = _rpc_body(res.text)
+    if body.get("error"):
+        raise ToolError(str(body["error"].get("message") or "DataBounty refused the request."))
+    result = body.get("result") or {}
+    content = result.get("content") or [{}]
+    text = content[0].get("text", "") if isinstance(content[0], dict) else ""
+    if result.get("isError"):
+        raise ToolError(text or "DataBounty refused the request.")
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = None) -> Any:
+    """Call one DataBounty tool as this session's person. Returns the tool's parsed result."""
+    for attempt in (1, 2):
+        res = _post_tool(_access_token(session), name, arguments)
         if res.status_code == 401:
             if attempt == 1:
                 # Revoked or expired early (another device signed out): refresh once and retry.
@@ -412,29 +442,25 @@ def call_tool(session: Session, name: str, arguments: dict[str, Any] | None = No
                     session.expires_at = 0
                 continue
             raise NotSignedIn()
-        if res.status_code == 429:
-            wait = res.headers.get("Retry-After", "a few")
-            raise ToolError(f"DataBounty is limiting requests right now. Try again in {wait} seconds.")
-        if res.status_code >= 400:
-            try:
-                detail = res.json()
-                message = detail.get("error_description") or detail.get("message") or detail.get("error")
-            except ValueError:
-                message = None
-            raise ToolError(str(message or f"DataBounty refused the request (HTTP {res.status_code})."))
-        body = _rpc_body(res.text)
-        if body.get("error"):
-            raise ToolError(str(body["error"].get("message") or "DataBounty refused the request."))
-        result = body.get("result") or {}
-        content = result.get("content") or [{}]
-        text = content[0].get("text", "") if isinstance(content[0], dict) else ""
-        if result.get("isError"):
-            raise ToolError(text or "DataBounty refused the request.")
-        try:
-            return json.loads(text)
-        except ValueError:
-            return text
+        return _tool_result(res)
     raise NotSignedIn()
+
+
+# DataBounty's personal API keys (apps/api services/api-keys.ts KEY_PREFIX). Only strings that
+# look like one are ever forwarded, so a token pasted into the wrong setting goes nowhere.
+API_KEY_PREFIX = "db_live_sk_"
+
+
+def call_tool_with_key(api_key: str, name: str, arguments: dict[str, Any] | None = None) -> Any:
+    """Call one DataBounty tool as the owner of a DataBounty API key (the agent tools in
+    agent_tools.py). The key is used for this one request, and never stored or logged; DataBounty
+    checks it, its scopes and its owner on every call."""
+    if not api_key.startswith(API_KEY_PREFIX):
+        raise NotSignedIn()
+    res = _post_tool(api_key, name, arguments)
+    if res.status_code == 401:
+        raise NotSignedIn()
+    return _tool_result(res)
 
 
 def upload_file(session: Session, bounty_id: str, path: str, filename: str, content_type: str) -> str:

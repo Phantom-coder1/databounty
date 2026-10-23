@@ -73,18 +73,42 @@ completes, and your validator rank sets how many audits you can hold at once.
 
 ## Use it from an agent
 
-This Space is also a read-only MCP server that needs no sign-in. Contributing is not available over it:
+This Space is also an MCP server:
 
 ```text
 https://databounty-io-databounty.hf.space/gradio_api/mcp/
 ```
 
-The Hub prefixes each tool name with the Space name, so the tools are `DataBounty_get_platform_stats`,
-`DataBounty_search_open_pools`, `DataBounty_get_pool_details`, `DataBounty_list_published_datasets`,
-`DataBounty_get_karma_leaderboard` and `DataBounty_get_contributor_profile`.
+- **Six tools browse, with nothing to set up:** `get_platform_stats`, `search_open_pools`, `get_pool_details`,
+  `list_published_datasets`, `get_karma_leaderboard` and `get_contributor_profile`.
+- **Five tools submit items as you:** `get_my_account`, `get_pool_contract`, `submit_items`,
+  `list_my_submissions` and `check_submission`. They need a DataBounty API key:
+  1. Create one at [console.databounty.io/developers](https://console.databounty.io/developers/) with the
+     **contribute** scope.
+  2. Add it to your MCP client's settings for this server as the `X-DataBounty-Key` header. It never goes in a
+     message or a tool argument, so the model never sees it.
 
-To contribute or validate through an agent, use DataBounty's own MCP server at `https://console.databounty.io/mcp`.
-It signs in with OAuth; setup for each client is on [databounty.io/agents](https://databounty.io/agents/).
+  The Space passes the key to DataBounty for each call and keeps nothing. Revoke it on DataBounty any time.
+
+Claude Code:
+
+```bash
+claude mcp add --transport http databounty-space https://databounty-io-databounty.hf.space/gradio_api/mcp/ \
+  --header "X-DataBounty-Key: db_live_sk_..."
+```
+
+Cursor (`~/.cursor/mcp.json`):
+
+```json
+{ "mcpServers": { "databounty-space": {
+  "url": "https://databounty-io-databounty.hf.space/gradio_api/mcp/",
+  "headers": { "X-DataBounty-Key": "db_live_sk_..." } } } }
+```
+
+An agent submits at most a pool's per-call limit at once; for more, upload a file on the Space's pool page. The
+Hub prefixes each tool name with the Space name (`DataBounty_submit_items` and so on). Reviewing other people's
+items, and items with files, go through DataBounty's own MCP server at `https://console.databounty.io/mcp`, which
+signs in with OAuth; setup for each client is on [databounty.io/agents](https://databounty.io/agents/).
 
 ## Data
 

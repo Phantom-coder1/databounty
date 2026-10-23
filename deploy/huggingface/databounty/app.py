@@ -6,13 +6,16 @@ DataBounty console, talking to webapi.py. Public data comes from databounty.io's
 databounty.py); signing in and contributing go through account.py and contribute.py.
 
 Gradio is mounted underneath for one job: the `gr.api` endpoints at the bottom are this Space's
-public, read-only programmatic surface, and with `mcp_server=True` each is also an MCP tool
-described by its docstring (served under /gradio_api/mcp/).
+programmatic surface, and with `mcp_server=True` each is also an MCP tool described by its
+docstring (served under /gradio_api/mcp/). Six browse DataBounty and need nothing. Five contribute,
+as the owner of the DataBounty API key the agent's MCP client sends in the X-DataBounty-Key header
+(agent_tools.py); the key is read with `gr.Header`, so it is never a tool argument the model sees.
 """
 
 from __future__ import annotations
 
 import html
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -25,6 +28,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 
 import account
+import agent_tools
 import databounty as db
 import webapi
 
@@ -169,14 +173,107 @@ def get_contributor_profile(handle: str) -> dict:
     return person if person is not None else {"error": "No public profile with that handle."}
 
 
+# --- Contributing through MCP, as the owner of a DataBounty API key ------------------------------
+
+
+def _as_agent(call) -> str:
+    """The result as JSON text. Gradio would otherwise send an unqueued tool's dict as Python's repr."""
+    try:
+        return json.dumps(call(), indent=2, ensure_ascii=False)
+    except agent_tools.AgentError as exc:
+        raise gr.Error(str(exc)) from exc
+
+
+def get_my_account(x_databounty_key: gr.Header) -> str:
+    """Check this server's DataBounty connection: whose API key it uses, and whether that account can submit.
+
+    The contribute tools (this one, get_pool_contract, submit_items, list_my_submissions and check_submission)
+    act as the owner of a DataBounty API key, which the MCP client sends as the X-DataBounty-Key header. Create
+    one at console.databounty.io/developers with the contribute scope and add it to this server's settings.
+    Never ask for the key in a message or pass it as an argument.
+
+    Returns:
+        The account's handle, display name and karma, whether it is ready to submit, and what to do next.
+    """
+    return _as_agent(lambda: agent_tools.my_account(x_databounty_key))
+
+
+def get_pool_contract(pool_id: str, x_databounty_key: gr.Header) -> str:
+    """Read exactly what a pool's items must contain, before submitting to it. Needs the X-DataBounty-Key header.
+
+    Args:
+        pool_id: The pool id, as returned by search_open_pools.
+
+    Returns:
+        Each field (its key, whether it is required, its kind, help and allowed options), how many items one
+        submit_items call may carry, the karma per accepted item, an approved example item when there is one,
+        and the checks every item goes through.
+    """
+    return _as_agent(lambda: agent_tools.pool_contract(pool_id, x_databounty_key))
+
+
+def submit_items(pool_id: str, items: list[dict], generation_method: str, x_databounty_key: gr.Header) -> str:
+    """Submit items to an open DataBounty pool, as the owner of this server's API key (X-DataBounty-Key header).
+
+    Read the pool with get_pool_contract first and check every item against its fields and difficulty. Each
+    item is an object mapping the pool's field keys to values. Items are checked here before anything is sent:
+    if any would be refused, nothing is sent and the reasons come back, so fix them and send the set again.
+    Say honestly how the items were made; DataBounty accepts AI help when it is declared. After submitting,
+    each item is checked automatically and then reviewed by a person.
+
+    Args:
+        items: The items, each an object of the pool's field values. At most the pool's max_items_per_call.
+        pool_id: The pool id, as returned by search_open_pools.
+        generation_method: How the items were made: human, ai_assisted or ai_generated.
+
+    Returns:
+        How many items were sent, each submission's id and status, how many duplicated items already in the
+        pool, and whether the pool filled up.
+    """
+    return _as_agent(lambda: agent_tools.submit_items(pool_id, items, generation_method, x_databounty_key))
+
+
+def list_my_submissions(status: str = "", pool_id: str = "", x_databounty_key: gr.Header = None) -> str:
+    """List the submissions of this server's API key owner, newest first. Needs the X-DataBounty-Key header.
+
+    Args:
+        status: Optional status to filter by, e.g. needs_fixes, in_audit, accepted or rejected.
+        pool_id: Optional pool id, to list only that pool's submissions.
+
+    Returns:
+        The total, and each submission's id, title, pool, status, where it stands in plain words, and date.
+    """
+    return _as_agent(lambda: agent_tools.my_submissions(x_databounty_key, status or "", pool_id or ""))
+
+
+def check_submission(submission_id: str, x_databounty_key: gr.Header) -> str:
+    """Read where one submission stands: its status and each check with its reason. Needs the X-DataBounty-Key header.
+
+    Read it to act on the result, not in a loop: checks take minutes and reviews take longer.
+
+    Args:
+        submission_id: The submission id, as returned by submit_items or list_my_submissions.
+
+    Returns:
+        The submission's status in plain words, each check and its result, any reviewer notes, and where to
+        fix it when it came back.
+    """
+    return _as_agent(lambda: agent_tools.submission_status(submission_id, x_databounty_key))
+
+
 with gr.Blocks(title="DataBounty") as demo:
-    gr.Markdown("DataBounty's read-only MCP tools. The Space itself is at [/](/).")
+    gr.Markdown("DataBounty's MCP tools. The Space itself is at [/](/).")
     gr.api(get_platform_stats, api_name="get_platform_stats")
     gr.api(search_open_pools, api_name="search_open_pools")
     gr.api(get_pool_details, api_name="get_pool_details")
     gr.api(list_published_datasets, api_name="list_published_datasets")
     gr.api(get_karma_leaderboard, api_name="get_karma_leaderboard")
     gr.api(get_contributor_profile, api_name="get_contributor_profile")
+    # Not queued, so Gradio calls them in the MCP request itself: the key header never makes the
+    # queue's loopback trip out through Hugging Face and back. The header parameter must come last in
+    # each signature: Gradio puts its value at that position, overwriting an argument that sits there.
+    for tool in (get_my_account, get_pool_contract, submit_items, list_my_submissions, check_submission):
+        gr.api(tool, api_name=tool.__name__, queue=False)
 
 # Every handler is network-bound and mostly answered from cache, so let several
 # visitors through at once instead of Gradio's default of one per event.

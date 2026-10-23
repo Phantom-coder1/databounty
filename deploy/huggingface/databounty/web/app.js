@@ -1182,8 +1182,13 @@ async function pageAgents() {
   mount($("#page"), html`<header class="page-head"><h1 class="title">API &amp; MCP</h1><p class="sub">Connect your AI agent to DataBounty. Sign-in is OAuth, so you never paste a key.</p></header>
     <div class="card pad stack" id="mcp-setup"><div class="skeleton" style="height:60px"></div></div>
     <h2 class="section">This Space is an MCP server too</h2>
-    <p class="section-sub">Read-only, with no sign-in, for agents that only need to browse: platform stats, open pools, pool details, published datasets, the leaderboard and public profiles.</p>
-    ${codeBox(space)}
+    <p class="section-sub">Browsing needs nothing. To submit items, create an API key at <a href="https://console.databounty.io/developers/" target="_blank" rel="noopener">databounty.io/developers</a> with the <b>contribute</b> scope and add it as the <span class="mono">X-DataBounty-Key</span> header. The key never goes in a message, so the AI never sees it.</p>
+    <div class="card pad stack">
+      <div><div class="micro">endpoint</div>${codeBox(space)}</div>
+      <div><div class="micro">claude code</div>${codeBox(`claude mcp add --transport http databounty-space ${space} --header "X-DataBounty-Key: db_live_sk_..."`)}</div>
+      <div><div class="micro">cursor · ~/.cursor/mcp.json</div>${codeBox(JSON.stringify({ mcpServers: { "databounty-space": { url: space, headers: { "X-DataBounty-Key": "db_live_sk_..." } } } }, null, 2))}</div>
+      <p class="hint" style="margin:0">Browse: stats, open pools, pool details, datasets, leaderboard, profiles. With a key: get_my_account, get_pool_contract, submit_items, list_my_submissions, check_submission.</p>
+    </div>
     <h2 class="section">DataBounty's tools</h2>
     <p class="section-sub">The scope is the permission a tool needs. Public tools work without signing in.</p>
     <div id="tools"><div class="skeleton"></div></div>`);
