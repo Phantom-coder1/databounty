@@ -91,6 +91,7 @@ const ICONS = {
   file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
   briefcase: '<path d="M16 20V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/><rect width="20" height="14" x="2" y="6" rx="2"/>',
   next: '<path d="m9 18 6-6-6-6"/>',
+  flag: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" x2="4" y1="22" y2="15"/>',
   prev: '<path d="m15 18-6-6 6-6"/>',
 };
 const icon = (name) => raw(`<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`);
@@ -536,8 +537,10 @@ async function pagePool(id) {
     <header class="page-head"><h1 class="title">${c.title}</h1><p class="sub">Community open pool${meta ? ` · ${meta}` : ""}</p></header>
     <div class="card cap-card"><div class="row"><span class="pill pill-karma">no claim needed — submit directly</span><span class="mono small muted">${c.remaining != null ? `${fmt(c.remaining)} items still wanted` : ""}${c.license ? ` · licence ${c.license}` : ""}</span></div></div>
     ${contractCard(c)}
+    <div id="sponsor-panel"></div>
     <div id="pool-work"></div>`);
   renderPoolWork(c);
+  if (state.me && state.me.canSponsor) renderSponsorPanel(c, live);
 }
 
 function contractCard(c) {
@@ -1055,6 +1058,85 @@ function renderAudit(a, index, back, live) {
   reject.addEventListener("click", () => decide({ verdict: "flagged", flagReason: reason.value, note: note.value.trim() }));
 }
 
+// --- Your pool (sponsors) -----------------------------------------------------------------------------
+// Only the person who requested a pool can see its items (DataBounty's rule). The pool page asks, and
+// shows this panel only when DataBounty says yes; everyone else sees nothing extra.
+
+const SPONSOR_FILTERS = [["all", "all"], ["progress", "in progress"], ["accepted", "accepted"], ["action", "sent back"], ["closed", "rejected"]];
+
+async function renderSponsorPanel(c, live) {
+  let data;
+  try { data = await api(`/api/pools/${encodeURIComponent(c.id)}/sponsor`); } catch { return; }
+  if (!live()) return;
+  drawSponsorPanel(c, data, "all", live);
+}
+
+function drawSponsorPanel(c, data, filter, live) {
+  const box = $("#sponsor-panel");
+  if (!box || !live()) return;
+  const count = (group) => data.items.filter((item) => item.statusGroup === group).length;
+  const shown = filter === "all" ? data.items : data.items.filter((item) => item.statusGroup === filter);
+  const icons = { pass: "check", fail: "x", wait: "clock", note: "alert" };
+  mount(box, html`<section class="card sponsor-card">
+    <div class="row between wrap">
+      <div><div class="micro">your pool</div><h3 style="margin:4px 0 2px;font-size:16px">You requested this pool</h3>
+        <p class="hint" style="margin:0">${fmt(data.total)} item${data.total === 1 ? "" : "s"} so far. You can dispute an accepted item while its window is open; an admin decides.</p></div>
+      <span class="pill pill-karma">sponsor view</span>
+    </div>
+    <div class="tabs-pills" style="margin:14px 0 10px">${SPONSOR_FILTERS.map(([key, label]) => html`<button class="${filter === key ? "on" : ""}" data-sponsor-filter="${key}">${label}${key === "all" ? "" : ` · ${count(key)}`}</button>`)}</div>
+    ${shown.length ? html`<div class="stack">${shown.map((item) => html`<details class="disclose" style="margin-top:0" data-item="${item.id}">
+      <summary><span class="grow" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.title}</span><span class="pill pill-${item.statusTone}">${item.statusLabel}</span><span class="mono small muted">${item.handle ? `@${item.handle}` : item.contributor}${item.date ? ` · ${item.date}` : ""}</span></summary>
+      <div class="body stack" style="padding-top:12px">
+        ${item.method ? html`<div><span class="pill">${item.method}</span></div>` : ""}
+        ${item.fields.map((f) => html`<div><div class="micro">${f.label}</div><pre class="block">${f.value}</pre></div>`)}
+        <div><div class="micro">checks</div>${item.checks.length
+          ? html`<ul class="checks" style="margin-top:6px">${item.checks.map((ch) => html`<li class="check check-${ch.state}"><span class="check-icon">${icon(icons[ch.state])}</span><div><b>${ch.label}</b>${ch.reason ? html`<span>${ch.reason}</span>` : ""}</div></li>`)}</ul>`
+          : html`<p class="hint" style="margin:6px 0 0">No checks recorded yet.</p>`}</div>
+        ${item.flags.map((flag) => notice("warn", html`<b>${flag.reason}.</b> ${flag.note}`))}
+        ${item.canDispute ? html`<div class="decide">
+          <div class="micro">dispute this item</div>
+          <p class="hint" style="margin:0">Open until ${new Date(item.disputeUntil).toLocaleString()}. Use it when the item shouldn't have been accepted.</p>
+          <select class="select" data-dispute-reason aria-label="Why"><option value="">Why shouldn't it have been accepted?</option>${FLAG_REASONS.map(([value, label]) => html`<option value="${value}">${label}</option>`)}</select>
+          <textarea class="textarea" data-dispute-argument placeholder="What's wrong with it, for the admin who decides." aria-label="What's wrong"></textarea>
+          <div class="form-foot"><span class="mono small muted" data-dispute-count></span><button class="btn btn-danger" data-dispute disabled>${icon("flag")} dispute item</button></div>
+          <div data-dispute-out></div>
+        </div>` : item.status === "accepted" && item.disputeUntil ? html`<p class="hint" style="margin:0">The dispute window closed on ${new Date(item.disputeUntil).toLocaleDateString()}.</p>` : ""}
+      </div>
+    </details>`)}</div>` : html`<div class="empty" style="padding:18px">${data.items.length ? "Nothing here." : "No items yet."}</div>`}
+    ${data.more ? html`<p class="hint" style="margin:12px 0 0">Showing the newest 50. Your full pool is on <a href="https://console.databounty.io/sponsor/" target="_blank" rel="noopener">databounty.io</a>.</p>` : ""}
+  </section>`);
+  $$("[data-sponsor-filter]", box).forEach((b) => b.addEventListener("click", () => drawSponsorPanel(c, data, b.dataset.sponsorFilter, live)));
+  $$("details[data-item]", box).forEach((details) => {
+    const button = $("[data-dispute]", details);
+    if (!button) return;
+    const reason = $("[data-dispute-reason]", details);
+    const argument = $("[data-dispute-argument]", details);
+    let busy = false;
+    const update = () => {
+      const n = argument.value.trim().length;
+      $("[data-dispute-count]", details).textContent = n >= MIN_NOTE ? `${n} characters` : `${n} of at least ${MIN_NOTE} characters`;
+      button.disabled = busy || !reason.value || n < MIN_NOTE;
+    };
+    reason.addEventListener("change", update);
+    argument.addEventListener("input", update);
+    update();
+    button.addEventListener("click", async () => {
+      if (busy) return;
+      busy = true;
+      update();
+      try {
+        await api(`/api/sponsor/submissions/${encodeURIComponent(details.dataset.item)}/dispute`, { method: "POST", body: { reason: reason.value, argument: argument.value.trim() } });
+        toast("Disputed. An admin decides it.");
+        renderSponsorPanel(c, live);
+      } catch (e) {
+        busy = false;
+        update();
+        mount($("[data-dispute-out]", details), notice("bad", html`<b>Not sent.</b> ${e.message}`));
+      }
+    });
+  });
+}
+
 // --- Sponsoring ----------------------------------------------------------------------------------------
 // Requesting a dataset happens on databounty.io: DataBounty's API doesn't offer it to other apps.
 
@@ -1079,6 +1161,8 @@ async function pageSponsor() {
       <li><span><b>The finished dataset is published</b> on the Hugging Face Hub, crediting every contributor.</span></li>
     </ol></div>
     <h2 class="section">Already a sponsor?</h2>
+    <p class="section-sub">Open your pool's page here to see the items people submitted, with their checks, and dispute an accepted one.</p>
+    ${state.me && !state.me.canSponsor ? html`<div style="margin-bottom:12px">${notice("warn", html`To see your pools here, sign out and in again, keeping <b>sponsor</b> ticked.`)}</div>` : ""}
     <div class="rows">
       <a class="card pool-row" href="${app}/sponsor/" target="_blank" rel="noopener"><div class="head"><span class="pool-title">Your requests and pools</span></div><div class="mono small muted">Track requests, review items in your pools and close a pool, on databounty.io.</div><span class="row-arrow">${icon("external")}</span></a>
     </div>`);
@@ -1182,12 +1266,12 @@ async function pageAgents() {
   mount($("#page"), html`<header class="page-head"><h1 class="title">API &amp; MCP</h1><p class="sub">Connect your AI agent to DataBounty. Sign-in is OAuth, so you never paste a key.</p></header>
     <div class="card pad stack" id="mcp-setup"><div class="skeleton" style="height:60px"></div></div>
     <h2 class="section">This Space is an MCP server too</h2>
-    <p class="section-sub">Browsing needs nothing. To submit items, create an API key at <a href="https://console.databounty.io/developers/" target="_blank" rel="noopener">databounty.io/developers</a> with the <b>contribute</b> scope and add it as the <span class="mono">X-DataBounty-Key</span> header. The key never goes in a message, so the AI never sees it.</p>
+    <p class="section-sub">Browsing needs nothing. To submit items, create an API key at <a href="https://console.databounty.io/developers/" target="_blank" rel="noopener">databounty.io/developers</a> with the <b>contribute</b> scope (add <b>sponsor</b> for your own pools) and set it as the <span class="mono">X-DataBounty-Key</span> header. The key never goes in a message, so the AI never sees it.</p>
     <div class="card pad stack">
       <div><div class="micro">endpoint</div>${codeBox(space)}</div>
       <div><div class="micro">claude code</div>${codeBox(`claude mcp add --transport http databounty-space ${space} --header "X-DataBounty-Key: db_live_sk_..."`)}</div>
       <div><div class="micro">cursor · ~/.cursor/mcp.json</div>${codeBox(JSON.stringify({ mcpServers: { "databounty-space": { url: space, headers: { "X-DataBounty-Key": "db_live_sk_..." } } } }, null, 2))}</div>
-      <p class="hint" style="margin:0">Browse: stats, open pools, pool details, datasets, leaderboard, profiles. With a key: get_my_account, get_pool_contract, submit_items, list_my_submissions, check_submission.</p>
+      <p class="hint" style="margin:0">Browse: stats, open pools, pool details, datasets, leaderboard, profiles. With a key: get_my_account, get_pool_contract, submit_items, list_my_submissions, check_submission. For a pool you requested: get_pool_items_as_sponsor, dispute_accepted_item.</p>
     </div>
     <h2 class="section">DataBounty's tools</h2>
     <p class="section-sub">The scope is the permission a tool needs. Public tools work without signing in.</p>

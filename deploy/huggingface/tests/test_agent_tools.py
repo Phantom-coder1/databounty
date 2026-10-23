@@ -53,6 +53,11 @@ class AgentToolsTest(unittest.TestCase):
             return {"submissions": [{"id": f"s{i}", "status": "submitted"} for i, _ in enumerate(arguments["items"])]}
         if name == "list_my_submissions":
             return {"items": [{"id": "s1", "title": "Parse flags", "status": "in_audit", "bounty": {"title": "CLI parsers"}}], "total": 1}
+        if name == "get_sponsor_submission_evidence":
+            return {"total": 1, "submissions": [{"id": "s9", "title": "Parse flags", "status": "accepted", "payloadJson": {"task": "t"},
+                                                 "contributor": {"handle": "kim"}, "disputeWindowClosesAt": "2999-01-01T00:00:00Z"}]}
+        if name == "dispute_accepted_submission":
+            return {"ok": True}
         raise account.ToolError(f"{name} isn't stubbed")
 
     def sent(self, name):
@@ -134,6 +139,17 @@ class AgentToolsTest(unittest.TestCase):
         self.assertEqual(listed["submissions"][0]["where_it_stands"], "In review")
 
 
+    def test_a_sponsor_reads_their_pool_and_disputes_with_a_real_reason(self):
+        with mock.patch.object(agent_tools.db, "pool_details", return_value={"fields": FIELDS}):
+            pool = agent_tools.sponsor_items("p1", KEY, status="accepted")
+        self.assertEqual(self.sent("get_sponsor_submission_evidence"), [{"bountyId": "p1", "limit": 50, "status": "accepted"}])
+        self.assertEqual((pool["total"], pool["items"][0]["fields"], pool["items"][0]["can_dispute"]), (1, {"task": "t"}, True))
+        with self.assertRaises(agent_tools.AgentError):
+            agent_tools.dispute_item("s9", "tests_invalid", "bad", KEY)
+        self.assertEqual(self.sent("dispute_accepted_submission"), [])
+        self.assertTrue(agent_tools.dispute_item("s9", "tests_invalid", "The tests assert nothing.", KEY)["disputed"])
+
+
 class CallWithKeyTest(unittest.TestCase):
     def test_the_key_is_the_bearer_and_a_refusal_is_not_signed_in(self):
         reply = mock.Mock(status_code=200, text='{"result": {"content": [{"type": "text", "text": "{\\"ok\\": true}"}]}}')
@@ -164,7 +180,8 @@ class ToolWiringTest(unittest.TestCase):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "databounty"))
         import app
 
-        for tool in (app.get_my_account, app.get_pool_contract, app.submit_items, app.list_my_submissions, app.check_submission):
+        for tool in (app.get_my_account, app.get_pool_contract, app.submit_items, app.list_my_submissions, app.check_submission,
+                     app.get_pool_items_as_sponsor, app.dispute_accepted_item):
             with self.subTest(tool.__name__):
                 params = list(inspect.signature(tool).parameters)
                 self.assertEqual(params[-1], "x_databounty_key")

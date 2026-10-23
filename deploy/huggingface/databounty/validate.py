@@ -93,14 +93,18 @@ def _text(value: Any) -> str:
     return json.dumps(value, indent=2, ensure_ascii=False)
 
 
+def fields_view(payload: Any, specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """An item's fields for reading: the contract's fields in its order, then anything else it carries."""
+    payload = payload if isinstance(payload, dict) else {}
+    known = [spec["key"] for spec in specs if spec.get("key")]
+    labels = {spec["key"]: spec.get("label") or spec["key"] for spec in specs if spec.get("key")}
+    kinds = {spec["key"]: contribute.field_kind(spec) for spec in specs if spec.get("key")}
+    keys = [k for k in known if k in payload] + [k for k in payload if k not in known]
+    return [{"key": key, "label": labels.get(key, key), "value": _text(payload.get(key)), "code": kinds.get(key) == "code"} for key in keys]
+
+
 def _item_view(item: dict[str, Any], specs: list[dict[str, Any]]) -> dict[str, Any]:
     sub = item.get("submission") or {}
-    payload = sub.get("payloadJson") if isinstance(sub.get("payloadJson"), dict) else {}
-    known = [spec["key"] for spec in specs]
-    labels = {spec["key"]: spec.get("label") or spec["key"] for spec in specs}
-    kinds = {spec["key"]: contribute.field_kind(spec) for spec in specs}
-    # The contract's fields in its order, then anything else the item carries.
-    keys = [k for k in known if k in payload] + [k for k in payload if k not in known]
     verdict = item.get("verdict")
     # The console's rule (validator/audit/[id]/view.tsx itemDecision): when DataBounty says where
     # a verdict came from, the verdict is real. An audit without an audit batch has no decision
@@ -111,10 +115,7 @@ def _item_view(item: dict[str, Any], specs: list[dict[str, Any]]) -> dict[str, A
         "submissionId": item.get("submissionId") or sub.get("id"),
         "title": sub.get("title") or "",
         "method": METHOD_LABELS.get(str(sub.get("generationMethod") or ""), ""),
-        "fields": [
-            {"key": key, "label": labels.get(key, key), "value": _text(payload.get(key)), "code": kinds.get(key) == "code"}
-            for key in keys
-        ],
+        "fields": fields_view(sub.get("payloadJson"), specs),
         "checks": [c for c in contribute.checks_for(sub.get("validationResults")) if c["stage"] != "human_audit"],
         "attachments": [
             {"name": a.get("filename") or "file", "size": a.get("sizeBytes")}

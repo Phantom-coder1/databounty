@@ -261,6 +261,40 @@ def check_submission(submission_id: str, x_databounty_key: gr.Header) -> str:
     return _as_agent(lambda: agent_tools.submission_status(submission_id, x_databounty_key))
 
 
+def get_pool_items_as_sponsor(pool_id: str, status: str = "", search: str = "", x_databounty_key: gr.Header = None) -> str:
+    """See the items submitted to a pool you requested, as its sponsor. Needs the X-DataBounty-Key header (sponsor scope).
+
+    Only the account that requested the pool can read its items.
+
+    Args:
+        pool_id: The id of a pool this account requested.
+        status: Optional status to filter by, e.g. accepted, in_audit or rejected.
+        search: Optional text to look for in item titles.
+
+    Returns:
+        Each item's id, title, status, contributor, how it was made, its fields and checks, any flags, and for an
+        accepted item whether it can still be disputed and until when.
+    """
+    return _as_agent(lambda: agent_tools.sponsor_items(pool_id, x_databounty_key, status or "", search or ""))
+
+
+def dispute_accepted_item(submission_id: str, reason: str, argument: str, x_databounty_key: gr.Header = None) -> str:
+    """Dispute an accepted item in a pool you requested, while its dispute window is open. Needs the X-DataBounty-Key header (sponsor scope).
+
+    An admin decides the dispute; the contributor's karma is only reversed if it is upheld. Dispute only with a
+    specific, real reason.
+
+    Args:
+        submission_id: The item's id, from get_pool_items_as_sponsor.
+        reason: Why: duplicate, contaminated, tests_invalid, solution_incorrect, too_trivial, low_quality, off_spec or other.
+        argument: What is wrong with the item, in 10 to 2000 characters.
+
+    Returns:
+        Whether the dispute was filed, and what happens next.
+    """
+    return _as_agent(lambda: agent_tools.dispute_item(submission_id, reason, argument, x_databounty_key))
+
+
 with gr.Blocks(title="DataBounty") as demo:
     gr.Markdown("DataBounty's MCP tools. The Space itself is at [/](/).")
     gr.api(get_platform_stats, api_name="get_platform_stats")
@@ -272,7 +306,15 @@ with gr.Blocks(title="DataBounty") as demo:
     # Not queued, so Gradio calls them in the MCP request itself: the key header never makes the
     # queue's loopback trip out through Hugging Face and back. The header parameter must come last in
     # each signature: Gradio puts its value at that position, overwriting an argument that sits there.
-    for tool in (get_my_account, get_pool_contract, submit_items, list_my_submissions, check_submission):
+    for tool in (
+        get_my_account,
+        get_pool_contract,
+        submit_items,
+        list_my_submissions,
+        check_submission,
+        get_pool_items_as_sponsor,
+        dispute_accepted_item,
+    ):
         gr.api(tool, api_name=tool.__name__, queue=False)
 
 # Every handler is network-bound and mostly answered from cache, so let several

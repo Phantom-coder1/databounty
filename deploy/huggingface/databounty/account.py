@@ -61,10 +61,11 @@ SPACE_URL = os.environ.get("SPACE_PUBLIC_URL", f"https://{SPACE_HOST}").rstrip("
 # local run, where DataBounty refuses to fetch a localhost document and a registered client id is used.
 CLIENT_ID = os.environ.get("DATABOUNTY_CLIENT_ID") or f"{SPACE_URL}/oauth/client-metadata.json"
 REDIRECT_URI = f"{SPACE_URL}/oauth/callback"
-# Only what contributing and reviewing need: read pools and your own items, submit
-# and revise them, upload files for file fields, review other people's items, and
-# set up a handle on first sign-in. Each is a box the person can untick.
-SCOPES = "read contribute validate artifact account"
+# Only what the Space's screens need: read pools and your own items, submit and
+# revise them, upload files for file fields, review other people's items, see the
+# items in a pool you requested, and set up a handle on first sign-in. Each is a
+# box the person can untick.
+SCOPES = "read contribute validate artifact sponsor account"
 
 LOGIN_COOKIE = "dbspace_login"
 LOGIN_TTL_SECONDS = 10 * 60

@@ -378,6 +378,8 @@ table.list tr.click:hover td { background: var(--panel); }
 .decide { display: grid; gap: 14px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
 .decide .reject { display: grid; gap: 8px; padding-top: 14px; border-top: 1px solid var(--line); }
 .item-nav { display: flex; justify-content: space-between; gap: 8px; }
+.sponsor-card { margin-top: 14px; padding: 20px 22px; border-color: var(--karma-border); }
+.sponsor-card details.disclose > summary { gap: 10px; }
 
 /* --- Small screens ------------------------------------------------------------------------------------------------ */
 @media (max-width: 600px) { .hide-sm { display: none; } }

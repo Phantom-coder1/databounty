@@ -17,6 +17,7 @@ import account
 import contribute
 import databounty as db
 import items as checks
+import sponsor
 
 KEY_HEADER = "X-DataBounty-Key"
 KEYS_URL = f"{db.APP_URL}/developers/"
@@ -195,3 +196,53 @@ def submission_status(submission_id: str, raw_key: str | None) -> dict[str, Any]
         "reviewer_notes": view["notes"],
         **({"fix_it_at": view["fixUrl"]} if view["fixUrl"] else {}),
     }
+
+
+def sponsor_items(pool_id: str, raw_key: str | None, status: str = "", search: str = "") -> dict[str, Any]:
+    """The items in a pool the key's owner requested, with each one's checks. Needs the sponsor scope."""
+    pool_id = (pool_id or "").strip()
+    if not pool_id:
+        raise AgentError("Say which pool: pass the id of a pool this account requested.")
+    arguments: dict[str, Any] = {"bountyId": pool_id, "limit": 50}
+    if status.strip():
+        arguments["status"] = status.strip()
+    if search.strip():
+        arguments["search"] = search.strip()[:120]
+    data = _call(_key(raw_key), "get_sponsor_submission_evidence", arguments) or {}
+    try:
+        specs = (db.pool_details(pool_id) or {}).get("fields") or []
+    except (ValueError, db.UpstreamError):
+        specs = []
+    view = sponsor.pool_view(data, specs)
+    return {
+        "total": view["total"],
+        "items": [
+            {
+                "id": item["id"],
+                "title": item["title"],
+                "status": item["status"],
+                "where_it_stands": item["statusLabel"],
+                "contributor": item["handle"] or item["contributor"],
+                "submitted": item["date"],
+                "how_it_was_made": item["method"],
+                "fields": {f["key"]: f["value"] for f in item["fields"]},
+                "checks": [{"check": c["label"], "result": c["state"], **({"reason": c["reason"]} if c["reason"] else {})} for c in item["checks"]],
+                **({"flags": item["flags"]} if item["flags"] else {}),
+                **({"dispute_until": item["disputeUntil"], "can_dispute": item["canDispute"]} if item["status"] == "accepted" else {}),
+            }
+            for item in view["items"]
+        ],
+        "more": view["more"],
+    }
+
+
+def dispute_item(submission_id: str, reason: str, argument: str, raw_key: str | None) -> dict[str, Any]:
+    """Dispute an accepted item in a pool the key's owner requested. An admin decides it."""
+    submission_id = (submission_id or "").strip()
+    if not submission_id:
+        raise AgentError("Say which item: pass its id from get_pool_items_as_sponsor.")
+    arguments, problem = sponsor.dispute({"reason": reason, "argument": argument})
+    if problem:
+        raise AgentError(problem)
+    _call(_key(raw_key), "dispute_accepted_submission", {"submissionId": submission_id, **arguments})
+    return {"disputed": True, "next_step": "An admin decides the dispute. The contributor's karma is only reversed if the dispute is upheld."}

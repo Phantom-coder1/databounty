@@ -22,6 +22,7 @@ import account
 import contribute
 import databounty as db
 import items as checks
+import sponsor
 import validate
 
 NO_STORE = {"Cache-Control": "no-store"}
@@ -171,8 +172,9 @@ def me(request: Request):
         "step": step,
         "suggestedHandle": suggestion,
         "profileUrl": f"{db.SITE_URL}/{who.get('handle')}/" if who.get("handle") else "",
-        # Sign-ins from before the Space asked for `validate` can contribute but not review.
+        # Sign-ins from before the Space asked for `validate` or `sponsor` can't use those screens.
         "canReview": "validate" in scopes,
+        "canSponsor": "sponsor" in scopes,
         "reviewer": validate.rank_view(who),
     })
 
@@ -482,3 +484,53 @@ async def decide(audit_id: str, request: Request):
         raise ApiError(400, problem)
     result = _call(session, "submit_decisions", {"windowId": audit_id, "decisions": [decision]}) or {}
     return _ok({"ok": True, "decided": result.get("decisionsCount", 1)})
+
+
+# --- Sponsoring ----------------------------------------------------------------------------------------
+# Only a pool's requester can see its items (DataBounty's rule), so the page asks on every pool and
+# shows the panel only when DataBounty says yes. Requesting a dataset stays on databounty.io.
+
+
+def _sponsor(request: Request) -> account.Session:
+    _, session = _session(request)
+    if "sponsor" not in session.scope.split():
+        raise ApiError(403, "Sign out, then sign in again and keep sponsor ticked, to see your pools here.", needs="sponsor_scope")
+    return session
+
+
+def _sponsor_call(session: account.Session, name: str, arguments: dict[str, Any]) -> Any:
+    try:
+        return account.call_tool(session, name, arguments)
+    except account.NotSignedIn as exc:
+        raise ApiError(401, "Your sign-in ended. Sign in again to continue.") from exc
+    except account.ToolError as exc:
+        message = str(exc)
+        if "owner" in message.lower() or "forbidden" in message.lower():
+            raise ApiError(403, "Only the person who requested this pool can see its items.", needs="not_sponsor") from exc
+        raise ApiError(400, message) from exc
+
+
+@router.get("/pools/{pool_id}/sponsor")
+def sponsor_pool(pool_id: str, request: Request, status: str = "", q: str = ""):
+    session = _sponsor(request)
+    arguments: dict[str, Any] = {"bountyId": pool_id, "limit": 50}
+    if status.strip():
+        arguments["status"] = status.strip()
+    if q.strip():
+        arguments["search"] = " ".join(q.split())[:120]
+    data = _sponsor_call(session, "get_sponsor_submission_evidence", arguments) or {}
+    try:
+        specs = (db.pool_details(pool_id) or {}).get("fields") or []
+    except (ValueError, db.UpstreamError):
+        specs = []  # labels are a nicety; the items still show under their keys
+    return _ok(sponsor.pool_view(data, specs))
+
+
+@router.post("/sponsor/submissions/{submission_id}/dispute")
+async def sponsor_dispute(submission_id: str, request: Request):
+    session = _sponsor(request)
+    arguments, problem = sponsor.dispute(await _json(request))
+    if problem:
+        raise ApiError(400, problem)
+    _sponsor_call(session, "dispute_accepted_submission", {"submissionId": submission_id, **arguments})
+    return _ok({"ok": True})

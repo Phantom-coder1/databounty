@@ -39,7 +39,8 @@ It looks and works like the console on databounty.io:
   are checked, then add items one at a time or many from a file.
 - **Validate**: review other people's items. Claim an open audit, check each item against the pool's spec and its
   automated checks, then approve it or reject it with a reason and a note for the contributor.
-- **Sponsor**: how requesting a dataset works, with links to make and track requests on databounty.io.
+- **Sponsor**: how requesting a dataset works, with links to make and track requests on databounty.io. If you
+  requested a pool, its page here also shows you every item in it, and you can dispute an accepted one.
 - **Datasets**: DataBounty releases on the Hub, with download counts.
 - **Leaderboard**: public karma standings and profiles. Private profiles, and any field a member hides, are never shown.
 - **API & MCP**: connect Claude, Cursor or VS Code to DataBounty's own MCP server.
@@ -49,10 +50,10 @@ It looks and works like the console on databounty.io:
 
 Press **sign in with DataBounty** and sign in with your DataBounty account, then approve the Space. On the Space's
 own page, sign-in happens in the same tab. On the huggingface.co page, a small sign-in window opens and closes itself
-when you're done, and the page signs you in where you are. The Space asks for five permissions: read pools and your
-own items, contribute items, review other people's items, upload files for file fields, and set up your account on
-first sign-in. You can untick any of them, but the Space can't contribute without *contribute* or review without
-*validate*.
+when you're done, and the page signs you in where you are. The Space asks for six permissions: read pools and your
+own items, contribute items, review other people's items, see the items in pools you requested, upload files for
+file fields, and set up your account on first sign-in. You can untick any of them, but the Space can't contribute
+without *contribute*, review without *validate*, or show your pools' items without *sponsor*.
 
 Then pick a pool, and add one item with the form or many at once from a JSONL, JSON, CSV or TSV file (there's a
 template to start from). A file is checked row by row before anything is sent. Each pool shows an example item when
@@ -62,7 +63,7 @@ it has one, and its full requirements one click away. **My submissions** shows w
   both on first sign-in. Choosing a username makes your profile public at `databounty.io/<username>` straight away.
 - Your DataBounty tokens stay in the Space's memory and are never written to disk or sent to your browser, which
   keeps only a random key to them. Signing out revokes the tokens. A restart of the Space signs everyone out.
-- Revisions, disputes and requesting a dataset happen on [databounty.io](https://databounty.io).
+- Revisions, contesting a reviewer's verdict, and requesting a dataset happen on [databounty.io](https://databounty.io).
 
 ## Reviewing from the Space
 
@@ -70,6 +71,15 @@ Open **Validate** and claim an open audit: a few items from one pool, yours for 
 Go through the items one at a time and approve each one, or reject it with a reason and a note of at least 10
 characters, which is all the contributor sees. Decisions are final. You earn karma for every decision when the audit
 completes, and your validator rank sets how many audits you can hold at once.
+
+## Sponsoring from the Space
+
+Requesting a dataset happens on [databounty.io](https://console.databounty.io/sponsor/create/). Once your pool is
+open, sign in here and open the pool's page: below its details you see every item in it, newest first, with its
+fields, its automated checks and any reviewer flags, and you can filter by where items stand. While an accepted
+item's dispute window is open, you can dispute it with a reason and an explanation of at least 10 characters. An
+admin decides, and the contributor's karma is only reversed if the dispute is upheld. Nobody else sees this view:
+DataBounty shows a pool's items only to the person who requested it.
 
 ## Use it from an agent
 
@@ -89,6 +99,9 @@ https://databounty-io-databounty.hf.space/gradio_api/mcp/
      message or a tool argument, so the model never sees it.
 
   The Space passes the key to DataBounty for each call and keeps nothing. Revoke it on DataBounty any time.
+- **Two tools for sponsors:** `get_pool_items_as_sponsor` lists the items in a pool you requested, with their
+  checks, and `dispute_accepted_item` disputes an accepted one. They need a key with the **sponsor** scope and
+  work only on your own pools.
 
 Claude Code:
 

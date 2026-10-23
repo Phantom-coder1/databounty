@@ -52,7 +52,7 @@ class WebApiTest(unittest.TestCase):
         self.client = TestClient(server)
         self.calls = []
         self.me = dict(ME)
-        self.scope = "read contribute validate artifact account"
+        self.scope = "read contribute validate artifact sponsor account"
         self.unclaimed = False
         self.submit_answer = None
         patcher = mock.patch.object(account, "call_tool", side_effect=self.call_tool)
@@ -93,6 +93,13 @@ class WebApiTest(unittest.TestCase):
                     "bounty": {"title": "CLI parsers", "datasetType": {"name": "Python function", "fields": FIELDS}},
                     "items": [{"id": "m1", "submissionId": "s1", "verdict": None, "decidedAt": None,
                                "submission": {"title": "Parse flags", "generationMethod": "human", "payloadJson": {"task": "t", "solution": "s"}}}]}
+        if name == "get_sponsor_submission_evidence":
+            if arguments["bountyId"] != "mine":
+                raise account.ToolError("only the bounty owner can inspect submissions")
+            return {"total": 1, "submissions": [{"id": "s9", "title": "Parse flags", "status": "accepted", "payloadJson": {"task": "t"},
+                                                 "contributor": {"handle": "kim"}, "disputeWindowClosesAt": "2999-01-01T00:00:00Z"}]}
+        if name == "dispute_accepted_submission":
+            return {"ok": True}
         if name == "submit_decisions":
             return {"ok": True, "windowId": arguments["windowId"], "decisionsCount": len(arguments["decisions"]), "rejectedCount": 0}
         raise account.ToolError(f"{name} isn't stubbed")
@@ -256,6 +263,32 @@ class WebApiTest(unittest.TestCase):
         self.assertEqual(res.status_code, 400)
         self.assertIn("at least 10 characters", res.json()["error"])
         self.assertEqual(self.sent("submit_decisions"), [])
+
+    # --- Sponsoring ---
+
+    def test_a_pool_shows_its_items_only_to_its_requester(self):
+        with mock.patch.object(webapi.db, "pool_details", return_value={"id": "mine", "fields": FIELDS}):
+            mine = self.client.get("/api/pools/mine/sponsor?status=accepted", headers=self.auth)
+            theirs = self.client.get("/api/pools/theirs/sponsor", headers=self.auth)
+        self.assertEqual(mine.status_code, 200, mine.text)
+        self.assertEqual((mine.json()["total"], mine.json()["items"][0]["canDispute"]), (1, True))
+        self.assertEqual(self.sent("get_sponsor_submission_evidence")[0], {"bountyId": "mine", "limit": 50, "status": "accepted"})
+        self.assertEqual((theirs.status_code, theirs.json()["needs"]), (403, "not_sponsor"))
+
+    def test_without_the_sponsor_permission_the_page_says_to_sign_in_again(self):
+        self.session.scope = "read contribute validate artifact account"
+        res = self.client.get("/api/pools/mine/sponsor", headers=self.auth)
+        self.assertEqual((res.status_code, res.json()["needs"]), (403, "sponsor_scope"))
+        self.assertFalse(self.client.get("/api/me", headers=self.auth).json()["canSponsor"])
+        self.assertEqual(self.sent("get_sponsor_submission_evidence"), [])
+
+    def test_a_dispute_is_checked_then_sent(self):
+        short = self.client.post("/api/sponsor/submissions/s9/dispute", json={"reason": "tests_invalid", "argument": "bad"}, headers=self.auth)
+        self.assertEqual(short.status_code, 400)
+        self.assertEqual(self.sent("dispute_accepted_submission"), [])
+        ok = self.client.post("/api/sponsor/submissions/s9/dispute", json={"reason": "tests_invalid", "argument": "The tests assert nothing."}, headers=self.auth)
+        self.assertEqual(ok.json(), {"ok": True})
+        self.assertEqual(self.sent("dispute_accepted_submission"), [{"submissionId": "s9", "reason": "tests_invalid", "argument": "The tests assert nothing."}])
 
     # --- Reading ---
 
