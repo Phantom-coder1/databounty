@@ -7,6 +7,12 @@ for CACHE_TTL_SECONDS, so a burst of visitors, or an agent calling the MCP tools
 in a loop, never turns into a burst of upstream requests. Errors are never
 cached, so a recovered upstream is picked up on the next call.
 
+Nobody waits for a refresh. DataBounty computes its stats and pool lists afresh
+once its own minute-long cache lapses, which takes it several seconds, so a
+cached answer older than CACHE_TTL_SECONDS is still served, and DataBounty is
+asked again in the background. Only one older than CACHE_MAX_STALE_SECONDS, or
+none at all, makes a request wait; warm() fills the cache when the Space starts.
+
 Profiles are read only from /v1/profiles/handle/:handle, which answers 404 for a
 private profile and leaves out every field the member chose to hide. Nothing
 here calls /v1/community/members/:handle, which applies neither rule.
@@ -14,12 +20,14 @@ here calls /v1/community/members/:handle, which applies neither rule.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 from urllib.parse import quote
 
@@ -31,6 +39,8 @@ SITE_URL = os.environ.get("DATABOUNTY_SITE_URL", "https://databounty.io").rstrip
 APP_URL = os.environ.get("DATABOUNTY_APP_URL", "https://console.databounty.io").rstrip("/")
 HF_ORG = os.environ.get("DATABOUNTY_HF_ORG", "databounty-io")
 CACHE_TTL_SECONDS = float(os.environ.get("CACHE_TTL_SECONDS", "120"))
+# How long an answer may still be served while a newer one loads in the background.
+CACHE_MAX_STALE_SECONDS = float(os.environ.get("CACHE_MAX_STALE_SECONDS", "3600"))
 
 # DataBounty's own MCP server. The dashboard origin proxies /mcp to the API, and
 # the API binds every OAuth credential to that origin, so this is the URL
@@ -67,24 +77,68 @@ _http = httpx.Client(
 _hub = HfApi()
 _cache: OrderedDict[tuple, tuple[float, Any]] = OrderedDict()
 _lock = threading.Lock()
+_loading: dict[tuple, Future] = {}  # keys a request is waiting on; others asking meanwhile share it
+_refreshing: set[tuple] = set()  # keys being refreshed in the background
+_refresher = ThreadPoolExecutor(max_workers=4, thread_name_prefix="databounty-refresh")
+# Set inside a background refresh: what it reads must be fresh, or a refreshed answer could be
+# built from stale parts (the pool catalog is read page by page, each page cached on its own).
+_in_refresh = threading.local()
+log = logging.getLogger(__name__)
 
 
-def _cached(key: tuple, load: Callable[[], Any]) -> Any:
-    now = time.monotonic()
+def _store(key: tuple, value: Any) -> None:
     with _lock:
-        hit = _cache.get(key)
-        if hit is not None and now - hit[0] < CACHE_TTL_SECONDS:
-            _cache.move_to_end(key)
-            return hit[1]
-    value = load()  # raises on failure, so errors never reach the cache
-    with _lock:
-        _cache[key] = (now, value)
+        _cache[key] = (time.monotonic(), value)
         _cache.move_to_end(key)
         # Keys include free-text search terms, so bound the cache rather than
         # let a stream of unique queries grow it forever.
         while len(_cache) > _CACHE_MAX_ENTRIES:
             _cache.popitem(last=False)
-    return value
+
+
+def _refresh(key: tuple, load: Callable[[], Any]) -> None:
+    _in_refresh.active = True
+    try:
+        _store(key, load())
+    except Exception as exc:  # keep serving what we have; the next read asks again
+        log.warning("Refreshing %s from DataBounty failed: %s", key[:2], exc)
+    finally:
+        _in_refresh.active = False
+        with _lock:
+            _refreshing.discard(key)
+
+
+def _cached(key: tuple, load: Callable[[], Any]) -> Any:
+    with _lock:
+        hit = _cache.get(key)
+        age = time.monotonic() - hit[0] if hit is not None else None
+        if age is not None and age < CACHE_TTL_SECONDS:
+            _cache.move_to_end(key)
+            return hit[1]
+        if age is not None and age < CACHE_MAX_STALE_SECONDS and not getattr(_in_refresh, "active", False):
+            # Answer now with what we have, and ask DataBounty again in the background.
+            if key not in _refreshing:
+                _refreshing.add(key)
+                _refresher.submit(_refresh, key, load)
+            _cache.move_to_end(key)
+            return hit[1]
+        waiting = _loading.get(key)
+        if waiting is None:
+            mine = _loading[key] = Future()
+    if waiting is not None:
+        return waiting.result()  # someone is already asking DataBounty for this
+    try:
+        value = load()  # raises on failure, so errors never reach the cache
+    except BaseException as exc:
+        mine.set_exception(exc)
+        raise
+    else:
+        _store(key, value)
+        mine.set_result(value)
+        return value
+    finally:
+        with _lock:
+            _loading.pop(key, None)
 
 
 def _get(path: str, params: dict[str, Any] | None = None, *, not_found_ok: bool = False) -> Any:
@@ -440,3 +494,14 @@ def platform_mcp_tools() -> list[dict[str, str]]:
         }
         for tool in tools
     ]
+
+
+def warm() -> None:
+    """Load what the first pages show, so the first visitor after the Space starts doesn't wait
+    for DataBounty. Run in a background thread; a failure here only means that visitor waits."""
+    for name, load in (("stats", stats), ("pools", open_pools), ("datasets", published_datasets),
+                       ("leaderboard", lambda: leaderboard(limit=100))):
+        try:
+            load()
+        except Exception as exc:  # noqa: BLE001 - warming is best effort
+            log.warning("Warming the %s cache failed: %s", name, exc)

@@ -57,6 +57,9 @@ class AppMountTest(unittest.TestCase):
         for path in ("/static/app.js", "/static/app.css", "/static/logo.svg"):
             with self.subTest(path):
                 self.assertEqual(client.get(path).status_code, 200)
+        # index.html versions app.css and app.js, so browsers keep those; anything else, for an hour.
+        self.assertEqual(client.get("/static/app.js?v=9").headers["cache-control"], "public, max-age=31536000, immutable")
+        self.assertEqual(client.get("/static/logo.svg").headers["cache-control"], "public, max-age=3600")
         self.assertEqual(client.get("/api/me").status_code, 401)
         self.assertEqual(client.get("/api/me").json(), {"error": "Sign in to continue."})
 

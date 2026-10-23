@@ -17,6 +17,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -336,7 +337,19 @@ def index() -> FileResponse:
     return FileResponse(WEB / "index.html", media_type="text/html", headers={"Cache-Control": "no-cache"})
 
 
-server.mount("/static", StaticFiles(directory=WEB), name="static")
+class _Assets(StaticFiles):
+    """The page's files. index.html names app.css and app.js with a `?v=` version that changes with
+    them, so a versioned URL never changes and browsers may keep it; anything else, for an hour."""
+
+    async def get_response(self, path: str, scope):  # type: ignore[override]
+        response = await super().get_response(path, scope)
+        if response.status_code in (200, 304):
+            versioned = b"v=" in (scope.get("query_string") or b"")
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable" if versioned else "public, max-age=3600"
+        return response
+
+
+server.mount("/static", _Assets(directory=WEB), name="static")
 
 SIGN_IN_PAGE_STYLE = (
     "body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f3f4f0;color:#14170f;"
@@ -444,6 +457,8 @@ app = gr.mount_gradio_app(
 )
 
 if __name__ == "__main__":
+    # Fill the public-data cache while the server starts, so the first visitor doesn't wait.
+    threading.Thread(target=db.warm, name="databounty-warm", daemon=True).start()
     uvicorn.run(
         app,
         host=os.environ.get("GRADIO_SERVER_NAME", "0.0.0.0"),

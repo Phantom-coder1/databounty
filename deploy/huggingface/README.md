@@ -59,7 +59,8 @@ would be uploaded with it.
 | `DATABOUNTY_SITE_URL` | `https://databounty.io` |
 | `DATABOUNTY_APP_URL` | `https://console.databounty.io` |
 | `DATABOUNTY_HF_ORG` | `databounty-io` |
-| `CACHE_TTL_SECONDS` | `120` |
+| `CACHE_TTL_SECONDS` | `120`. How long public data counts as fresh. |
+| `CACHE_MAX_STALE_SECONDS` | `3600`. How long older public data is still served at once while it refreshes in the background. |
 | `DATABOUNTY_MCP_URL` | `https://console.databounty.io/mcp` |
 | `SPACE_PUBLIC_URL` | `https://$SPACE_HOST` (Hugging Face sets `SPACE_HOST`) |
 | `SPACE_COOKIE_SECRET` | random per start. Set it as a Space **secret** so sign-ins in flight survive a restart. |

@@ -259,19 +259,23 @@ function activeNav() {
   return "#/";
 }
 
+// The sidebar's karma box. `tiers` is null until the tier ladder arrives.
+function sideKarma(me, tiers) {
+  const { current, next, pct } = tiers ? tierFor(me.karma || 0, tiers) : { current: null, next: null, pct: 0 };
+  return html`
+    <div class="row between"><span class="micro-dark">karma</span>${current ? html`<span class="chip-dark">${current.label}</span>` : ""}</div>
+    <div class="row between" style="margin-top:6px"><span class="pts">${fmt(me.karma || 0)} pts</span>${next ? html`<span class="to">${fmt(next.minKarma - (me.karma || 0))} to ${next.label}</span>` : ""}</div>
+    <div class="bar-dark"><span style="width:${pct}%"></span></div>`;
+}
+
 async function renderSidebar() {
   const active = activeNav();
   const me = state.me;
   let bottom;
   if (me) {
-    const { tiers } = await overview();
-    const { current, next, pct } = tierFor(me.karma || 0, tiers);
+    // Drawn at once; the tier fills in when it arrives, so the menu never waits on it.
     bottom = html`
-      <div class="side-karma">
-        <div class="row between"><span class="micro-dark">karma</span>${current ? html`<span class="chip-dark">${current.label}</span>` : ""}</div>
-        <div class="row between" style="margin-top:6px"><span class="pts">${fmt(me.karma || 0)} pts</span>${next ? html`<span class="to">${fmt(next.minKarma - (me.karma || 0))} to ${next.label}</span>` : ""}</div>
-        <div class="bar-dark"><span style="width:${pct}%"></span></div>
-      </div>
+      <div class="side-karma" id="side-karma">${sideKarma(me, null)}</div>
       <div class="user-chip"><div class="avatar">${initial(me.displayName || me.handle)}</div><div class="who"><b>${me.displayName || "You"}</b><span>${me.handle ? "@" + me.handle : me.email}</span></div></div>
       <button class="side-link row" data-action="sign-out">${icon("logout")} sign out</button>`;
   } else {
@@ -283,6 +287,10 @@ async function renderSidebar() {
     ${me ? html`<button class="top-action" data-action="sign-out" title="Sign out" aria-label="Sign out">${icon("logout")}</button>`
       : html`<button class="top-action" data-action="sign-in">sign in</button>`}
     <div class="side-bottom">${bottom}</div>`);
+  if (!me) return;
+  const { tiers } = await overview();
+  const box = $("#side-karma");
+  if (box && state.me === me) mount(box, sideKarma(me, tiers));
 }
 
 // --- Routing --------------------------------------------------------------------------------------
