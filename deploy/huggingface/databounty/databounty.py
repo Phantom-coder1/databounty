@@ -464,22 +464,6 @@ def contributor(handle: str) -> dict[str, Any] | None:
     }
 
 
-# --- Requesting a dataset ------------------------------------------------------------
-
-
-def request_catalog() -> dict[str, Any]:
-    """DataBounty's planner catalog: the dataset types open for requests, with the languages,
-    difficulty levels and hand-check shares each one offers, and how many reference samples a
-    request wants. Public, like the rest of what the Space reads here."""
-    return _get("/v1/planner/catalog") or {}
-
-
-def requesting_open() -> bool:
-    """Whether DataBounty takes dataset requests from other apps (its request_dataset MCP tool).
-    Until it does, the Space links to databounty.io instead."""
-    return any(tool["name"] == "request_dataset" for tool in platform_mcp_tools())
-
-
 # --- Agents -------------------------------------------------------------------------
 
 

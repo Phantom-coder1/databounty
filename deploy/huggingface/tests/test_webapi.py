@@ -102,13 +102,6 @@ class WebApiTest(unittest.TestCase):
             return {"ok": True}
         if name == "submit_decisions":
             return {"ok": True, "windowId": arguments["windowId"], "decisionsCount": len(arguments["decisions"]), "rejectedCount": 0}
-        if name == "request_dataset":
-            return {"request": {"id": "r1", "title": arguments["title"]}, "alreadyFiled": False, "nextStep": "..."}
-        if name == "list_my_dataset_requests":
-            return {"requests": [{"id": "r1", "title": "Go refactors", "status": "changes_requested", "datasetTypeId": "debugging",
-                                  "adminNote": "Say which Go version.", "createdAt": "2026-10-23T09:00:00Z", "targetItems": 500,
-                                  "sampleGate": {"ok": False, "approved": 0, "pending": 1, "rejected": 0, "min": 3, "max": 3}}],
-                    "nextCursor": None}
         raise account.ToolError(f"{name} isn't stubbed")
 
     def sent(self, name):
@@ -322,84 +315,6 @@ class WebApiTest(unittest.TestCase):
             res = self.client.get("/api/pools/p1/template.csv")
         self.assertEqual(res.text.strip(), "task,solution,level")
         self.assertEqual(res.headers["content-disposition"], 'attachment; filename="cli-parsers-template.csv"')
-
-    # --- Requesting a dataset ---
-
-    CATALOG = {"sampleGate": {"min": 3}, "datasetTypes": [
-        {"id": "debugging", "name": "Debugging", "category": "debugging", "status": "active",
-         "languageSupport": {"mode": "fixed", "languages": [{"label": "TypeScript"}]},
-         "difficultyLevels": ["beginner", "intermediate", "advanced"], "auditOptions": [0, 25, 100],
-         "fields": [{"key": "prompt"}, {"key": "fixed_code"}]}]}
-    REQUEST = {"datasetTypeId": "debugging", "title": "TypeScript bug fixes", "description": "Real bugs with the fix and a failing test.",
-               "targetItems": 200, "difficultyMix": "balanced", "auditCoveragePct": 25, "proposedLicense": "CC-BY-4.0",
-               "idempotencyKey": "c0ffee00-1234-4abc-9def-0123456789ab"}
-
-    def test_the_form_offers_the_catalog_and_opens_once_databounty_takes_requests(self):
-        for open_ in (True, False):
-            tools = [{"name": "request_dataset", "scope": "sponsor", "description": ""}] if open_ else []
-            with mock.patch.object(webapi.db, "request_catalog", return_value=self.CATALOG), \
-                    mock.patch.object(webapi.db, "platform_mcp_tools", return_value=tools):
-                body = self.client.get("/api/requesting").json()
-            self.assertEqual(body["open"], open_)
-            self.assertEqual([t["id"] for t in body["types"]], ["debugging"])
-            self.assertEqual(body["defaults"]["difficultyMix"], "balanced")
-        with mock.patch.object(webapi.db, "request_catalog", return_value=self.CATALOG), \
-                mock.patch.object(webapi.db, "platform_mcp_tools", side_effect=webapi.db.UpstreamError("down")):
-            self.assertFalse(self.client.get("/api/requesting").json()["open"])  # can't tell: keep the link
-
-    def test_a_request_is_checked_then_sent_once_with_its_retry_key(self):
-        with mock.patch.object(webapi.db, "request_catalog", return_value=self.CATALOG):
-            short = self.client.post("/api/requests", json=dict(self.REQUEST, title="abc"), headers=self.auth)
-            self.assertEqual(short.status_code, 400)
-            self.assertEqual(self.sent("request_dataset"), [])
-            ok = self.client.post("/api/requests", json=self.REQUEST, headers=self.auth)
-        self.assertEqual(ok.json(), {"id": "r1", "alreadyFiled": False})
-        [arguments] = self.sent("request_dataset")
-        self.assertEqual((arguments["language"], arguments["idempotencyKey"], arguments["targetItems"]),
-                         ("TypeScript", self.REQUEST["idempotencyKey"], 200))
-
-    def test_requests_read_back_in_plain_words(self):
-        with mock.patch.object(webapi.db, "request_catalog", return_value=self.CATALOG):
-            body = self.client.get("/api/requests/mine", headers=self.auth).json()
-        [row] = body["requests"]
-        self.assertEqual((row["type"], row["statusLabel"], row["adminNote"]), ("Debugging", "Changes asked for", "Say which Go version."))
-        self.assertTrue(row["canAddSample"])
-        self.assertEqual(self.sent("list_my_dataset_requests"), [{"limit": 50}])
-
-    def test_requesting_needs_the_sponsor_permission(self):
-        self.session.scope = "read contribute validate artifact account"
-        for method, path in (("post", "/api/requests"), ("get", "/api/requests/mine"), ("post", "/api/requests/r1/samples")):
-            with self.subTest(path):
-                res = getattr(self.client, method)(path, headers=self.auth)
-                self.assertEqual((res.status_code, res.json()["needs"]), (403, "sponsor_scope"))
-
-    def test_an_example_item_is_uploaded_to_the_request_and_not_left_on_disk(self):
-        seen = {}
-
-        def upload(session, request_id, path, filename, content_type):
-            seen.update(request_id=request_id, filename=filename, content_type=content_type, path=path, data=Path(path).read_bytes())
-            return "f1"
-
-        with mock.patch.object(account, "upload_sample", side_effect=upload):
-            res = self.client.post("/api/requests/r1/samples", files={"file": ("example.jsonl", b'{"prompt": "p"}\n', "")}, headers=self.auth)
-        self.assertEqual(res.json(), {"ok": True})
-        self.assertEqual((seen["request_id"], seen["filename"], seen["content_type"]), ("r1", "example.jsonl", "application/x-ndjson"))
-        self.assertEqual(seen["data"], b'{"prompt": "p"}\n')
-        self.assertFalse(Path(seen["path"]).exists())
-
-    def test_a_refused_example_says_which_file_and_why(self):
-        with mock.patch.object(account, "upload_sample", side_effect=account.ToolError("this request is approved — its reference samples are frozen")):
-            res = self.client.post("/api/requests/r1/samples", files={"file": ("one.json", b"{}", "application/json")}, headers=self.auth)
-        self.assertEqual(res.status_code, 400)
-        self.assertEqual(res.json()["error"], "one.json: this request is approved — its reference samples are frozen")
-
-    def test_the_example_template_holds_the_types_fields(self):
-        with mock.patch.object(webapi.db, "request_catalog", return_value=self.CATALOG):
-            res = self.client.get("/api/requesting/debugging/example.json")
-            gone = self.client.get("/api/requesting/nope/example.json")
-        self.assertEqual(json.loads(res.text), {"prompt": "", "fixed_code": ""})
-        self.assertEqual(res.headers["content-disposition"], 'attachment; filename="debugging-example.json"')
-        self.assertEqual(gone.status_code, 404)
 
     def test_a_public_api_outage_is_a_502_with_a_message(self):
         with mock.patch.object(webapi.db, "published_datasets", side_effect=webapi.db.UpstreamError("DataBounty didn't answer.")):

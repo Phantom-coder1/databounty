@@ -22,7 +22,6 @@ import account
 import contribute
 import databounty as db
 import items as checks
-import requesting
 import sponsor
 import validate
 
@@ -534,86 +533,4 @@ async def sponsor_dispute(submission_id: str, request: Request):
     if problem:
         raise ApiError(400, problem)
     _sponsor_call(session, "dispute_accepted_submission", {"submissionId": submission_id, **arguments})
-    return _ok({"ok": True})
-
-
-# --- Requesting a dataset (sponsors) -------------------------------------------------------------------
-# The request goes to DataBounty's request_dataset tool, which checks it again; an admin reviews it,
-# and its reference samples, before a pool opens. Until DataBounty has that tool, the page links to
-# databounty.io instead (`open` below).
-
-SAMPLE_TYPES = {".json": "application/json", ".jsonl": "application/x-ndjson", ".ndjson": "application/x-ndjson"}
-
-
-def _request_options() -> dict[str, Any]:
-    return requesting.catalog_view(_public(db.request_catalog))
-
-
-@router.get("/requesting")
-def requesting_options():
-    view = _request_options()
-    try:
-        view["open"] = db.requesting_open()
-    except db.UpstreamError:
-        view["open"] = False  # can't tell: keep the link to databounty.io
-    return _ok(view)
-
-
-@router.get("/requesting/{type_id}/example.json")
-def example_template(type_id: str):
-    """An empty example item for a dataset type, to fill in and attach to a request."""
-    t = next((t for t in _request_options()["types"] if t["id"] == type_id), None)
-    if not t:
-        raise ApiError(404, "That dataset type isn't open for requests.")
-    body = json.dumps({key: "" for key in t["fields"]}, indent=2) + "\n"
-    slug = re.sub(r"[^a-z0-9_-]+", "-", type_id.lower()).strip("-") or "dataset"
-    return Response(
-        body,
-        media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="{slug}-example.json"', **NO_STORE},
-    )
-
-
-@router.post("/requests")
-async def file_request(request: Request):
-    session = _sponsor(request)
-    types = {t["id"]: t for t in _request_options()["types"]}
-    arguments, problem = requesting.request_arguments(await _json(request), types)
-    if problem:
-        raise ApiError(400, problem)
-    result = _sponsor_call(session, "request_dataset", arguments) or {}
-    filed = result.get("request") or {}
-    return _ok({"id": filed.get("id"), "alreadyFiled": bool(result.get("alreadyFiled"))})
-
-
-@router.get("/requests/mine")
-def my_requests(request: Request):
-    session = _sponsor(request)
-    data = _sponsor_call(session, "list_my_dataset_requests", {"limit": 50}) or {}
-    try:
-        names = {t["id"]: t["name"] for t in _request_options()["types"]}
-    except ApiError:
-        names = {}  # names are a nicety; the requests still show
-    rows = [requesting.request_row(r, names) for r in data.get("requests") or [] if isinstance(r, dict)]
-    return _ok({"requests": rows, "more": bool(data.get("nextCursor"))})
-
-
-@router.post("/requests/{request_id}/samples")
-async def add_sample(request_id: str, request: Request):
-    session = _sponsor(request)
-    async with request.form() as form:
-        upload = form.get("file")
-        if upload is None or not getattr(upload, "filename", ""):
-            raise ApiError(400, "Choose a file with an example item.")
-        path, filename, content_type = await _save(upload)
-    try:
-        # Browsers rarely name a JSON Lines file's type; DataBounty checks the pair.
-        content_type = SAMPLE_TYPES.get(Path(filename).suffix.lower(), content_type)
-        account.upload_sample(session, request_id, path, filename, content_type)
-    except account.NotSignedIn as exc:
-        raise ApiError(401, "Your sign-in ended. Sign in again to continue.") from exc
-    except account.ToolError as exc:
-        raise ApiError(400, f"{filename}: {exc}") from exc
-    finally:
-        Path(path).unlink(missing_ok=True)
     return _ok({"ok": True})
