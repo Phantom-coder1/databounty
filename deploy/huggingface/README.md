@@ -7,13 +7,16 @@ Hub's YAML front matter).
 ## `databounty/` → `databounty-io/DataBounty`
 
 A Space that shows DataBounty's live pools, published datasets, karma leaderboard and public profiles, and lets a
-person sign in to DataBounty to add items to open pools, review other people's, and see the items in pools they
-requested, as themselves. Its page is a small web app drawn like the
+person sign in to DataBounty to add items to open pools, review other people's, request datasets, and see the items
+in pools they requested, as themselves. Its page is a small web app drawn like the
 DataBounty console (`web/`: `index.html`, `app.css`, `app.js`, no build step), backed by a JSON API (`webapi.py`).
 Gradio is mounted underneath only for the Space's MCP server at `/gradio_api/mcp/`: six browse tools, and seven
 that act as the owner of a DataBounty API key (`agent_tools.py`): five submit items, two serve a pool's sponsor. The key comes in the `X-DataBounty-Key`
 header, read with `gr.Header`, so it is never a tool argument the model sees. Keep the header parameter last in
-each tool's signature: Gradio writes its value at that position. It has no database: browsing
+each tool's signature: Gradio writes its value at that position. Requesting a dataset (`requesting.py`) reads
+DataBounty's public planner catalog for the form and files through its `request_dataset` tool; the Sponsor page
+offers the form only once that tool appears in DataBounty's public tool list, and links to databounty.io until
+then. It has no database: browsing
 reads only DataBounty's public API and the Hub, and a signed-in person's tokens live in the process's memory. It runs
 on free `cpu-basic` hardware.
 

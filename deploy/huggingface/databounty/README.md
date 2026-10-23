@@ -39,8 +39,8 @@ It looks and works like the console on databounty.io:
   are checked, then add items one at a time or many from a file.
 - **Validate**: review other people's items. Claim an open audit, check each item against the pool's spec and its
   automated checks, then approve it or reject it with a reason and a note for the contributor.
-- **Sponsor**: how requesting a dataset works, with links to make and track requests on databounty.io. If you
-  requested a pool, its page here also shows you every item in it, and you can dispute an accepted one.
+- **Sponsor**: request a dataset, add example items to it and follow it through review. If you requested a pool,
+  its page here also shows you every item in it, and you can dispute an accepted one.
 - **Datasets**: DataBounty releases on the Hub, with download counts.
 - **Leaderboard**: public karma standings and profiles. Private profiles, and any field a member hides, are never shown.
 - **API & MCP**: connect Claude, Cursor or VS Code to DataBounty's own MCP server.
@@ -74,8 +74,14 @@ completes, and your validator rank sets how many audits you can hold at once.
 
 ## Sponsoring from the Space
 
-Requesting a dataset happens on [databounty.io](https://console.databounty.io/sponsor/create/). Once your pool is
-open, sign in here and open the pool's page: below its details you see every item in it, newest first, with its
+To request a dataset, open **Sponsor**, pick a dataset type, and say how many items you want, how hard, and under
+which licence. Then add up to three example items to the request, as JSON files (each request has a template to
+start from). DataBounty's team reviews the request and its examples, and the pool can open once one example is
+approved. **Your requests** shows where each one stands, with any note from the reviewer. Requesting from the
+Space needs DataBounty's request tool; where it isn't live yet, the Sponsor page links to
+[databounty.io](https://console.databounty.io/sponsor/create/) instead.
+
+Once your pool is open, sign in here and open the pool's page: below its details you see every item in it, newest first, with its
 fields, its automated checks and any reviewer flags, and you can filter by where items stand. While an accepted
 item's dispute window is open, you can dispute it with a reason and an explanation of at least 10 characters. An
 admin decides, and the contributor's karma is only reversed if the dispute is upheld. Nobody else sees this view:

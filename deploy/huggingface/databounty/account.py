@@ -467,6 +467,36 @@ def call_tool_with_key(api_key: str, name: str, arguments: dict[str, Any] | None
 def upload_file(session: Session, bounty_id: str, path: str, filename: str, content_type: str) -> str:
     """Upload one file for a file field and wait for DataBounty's scan. Returns the artifact id
     that goes in the item's payload."""
+    file_id = _upload(session, {"kind": "submission_attachment", "bountyId": bounty_id}, path, filename, content_type)
+    deadline = time.time() + 120
+    while True:
+        status = call_tool(session, "get_file_status", {"fileId": file_id}) or {}
+        state = status.get("status")
+        if state == "ready":
+            return file_id
+        if state in {"quarantined", "deleted"}:
+            raise ToolError(f"{filename} did not pass DataBounty's file checks, so it can't be attached.")
+        progress = status.get("scanProgress") or {}
+        if progress.get("blocked"):
+            raise ToolError(f"{filename} is stuck in DataBounty's file scan and needs an operator. Try again later.")
+        # Pace by DataBounty's own estimate instead of polling blindly.
+        wait = (status.get("ingest") or {}).get("recheckAfterSeconds")
+        wait = min(max(float(wait), 2.0), 15.0) if isinstance(wait, (int, float)) else 3.0
+        if time.time() + wait > deadline:
+            raise ToolError(f"{filename} is still being checked. Submit again in a minute.")
+        time.sleep(wait)
+
+
+def upload_sample(session: Session, request_id: str, path: str, filename: str, content_type: str) -> str:
+    """Attach one reference sample (an example item) to the person's own dataset request. DataBounty
+    scans it in the background and an admin reviews it with the request, so this doesn't wait for
+    the scan. Returns its file id."""
+    return _upload(session, {"kind": "sponsor_reference", "datasetRequestId": request_id}, path, filename, content_type)
+
+
+def _upload(session: Session, target: dict[str, Any], path: str, filename: str, content_type: str) -> str:
+    """Upload one file to DataBounty for `target` (its kind and what it belongs to) and complete it.
+    Returns the file id; DataBounty starts its scan."""
     data = Path(path).read_bytes()
     slot = call_tool(
         session,
@@ -474,10 +504,9 @@ def upload_file(session: Session, bounty_id: str, path: str, filename: str, cont
         {
             "filename": filename,
             "contentType": content_type,
-            "kind": "submission_attachment",
             "sizeBytes": len(data),
             "checksumSha256": hashlib.sha256(data).hexdigest(),
-            "bountyId": bounty_id,
+            **target,
         },
     )
     upload = slot.get("upload") or {}
@@ -497,22 +526,6 @@ def upload_file(session: Session, bounty_id: str, path: str, filename: str, cont
         raise ToolError(f"{filename} could not be uploaded. Try again.") from exc
     if res.status_code >= 300:
         raise ToolError(f"{filename} was refused by storage (HTTP {res.status_code}).")
-    file_id = slot.get("fileId") or slot.get("artifactId")
+    file_id = str(slot.get("fileId") or slot.get("artifactId") or "")
     call_tool(session, "complete_file_upload", {"fileId": file_id})
-    deadline = time.time() + 120
-    while True:
-        status = call_tool(session, "get_file_status", {"fileId": file_id}) or {}
-        state = status.get("status")
-        if state == "ready":
-            return slot["artifactId"]
-        if state in {"quarantined", "deleted"}:
-            raise ToolError(f"{filename} did not pass DataBounty's file checks, so it can't be attached.")
-        progress = status.get("scanProgress") or {}
-        if progress.get("blocked"):
-            raise ToolError(f"{filename} is stuck in DataBounty's file scan and needs an operator. Try again later.")
-        # Pace by DataBounty's own estimate instead of polling blindly.
-        wait = (status.get("ingest") or {}).get("recheckAfterSeconds")
-        wait = min(max(float(wait), 2.0), 15.0) if isinstance(wait, (int, float)) else 3.0
-        if time.time() + wait > deadline:
-            raise ToolError(f"{filename} is still being checked. Submit again in a minute.")
-        time.sleep(wait)
+    return file_id

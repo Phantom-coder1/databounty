@@ -8,6 +8,7 @@ The full sign-in round trip against a real DataBounty API is exercised separatel
 import os
 import sys
 import time
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -140,6 +141,31 @@ class TransportTest(unittest.TestCase):
         self.assertEqual(doc["token_endpoint_auth_method"], "none")
         self.assertIn("authorization_code", doc["grant_types"])
         self.assertTrue(doc["client_name"])
+
+
+class UploadSampleTest(unittest.TestCase):
+    def test_an_example_item_goes_to_the_request_without_waiting_for_the_scan(self):
+        calls = []
+
+        def call_tool(session, name, arguments=None):
+            calls.append((name, arguments))
+            if name == "prepare_file_upload":
+                return {"artifactId": "f1", "fileId": "f1", "upload": {"url": "/v1/artifacts/f1/upload", "fields": {"key": "k"}}}
+            return {"ok": True}
+
+        posted = mock.Mock(status_code=204)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "example.json"
+            path.write_bytes(b'{"prompt": "p"}')
+            with mock.patch.object(account, "call_tool", side_effect=call_tool), \
+                    mock.patch.object(account._client, "post", return_value=posted) as post:
+                file_id = account.upload_sample(object(), "r1", str(path), "example.json", "application/json")
+        self.assertEqual(file_id, "f1")
+        declared = calls[0][1]
+        self.assertEqual((declared["kind"], declared["datasetRequestId"], declared["sizeBytes"]), ("sponsor_reference", "r1", 15))
+        self.assertNotIn("bountyId", declared)
+        self.assertEqual([name for name, _ in calls], ["prepare_file_upload", "complete_file_upload"])  # no scan polling
+        self.assertTrue(post.call_args.args[0].endswith("/v1/artifacts/f1/upload"))
 
 
 if __name__ == "__main__":
