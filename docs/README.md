@@ -12,7 +12,7 @@ after that.
 | [Configuration](configuration.md) | Set environment variables correctly. The API reads **81**; this documents **43** of them — what each does and what breaks when it is unset — plus the **30** runtime settings that live in the database instead. The remaining **38 are being written up next** — for those, `apps/api/src/config.ts` is the source of truth today, and it declares each one in place with its default. They cover the Hugging Face and GitHub publication credentials, `SUPER_ADMIN_EMAIL`/`SUPER_ADMIN_PASSWORD`, the cookie and database-pool settings, the MCP and API-key rate limits, and the background sweep intervals. |
 | [Self-hosting](self-hosting.md) | Take it from empty database to serving traffic, then keep it running — first run, seeding, upgrades, backups, and the failures that look like bugs but aren't. |
 | [REST API](api.md) | Call the API from your own code. Authentication, scopes, conventions, and the full route surface by area. |
-| [MCP server](mcp.md) | Point an agent at it. All 45 tools by scope, both auth modes, and the limits. |
+| [MCP server](mcp.md) | Point an agent at it. All 48 tools by scope, both auth modes, and the limits. |
 
 ## Conventions used here
 

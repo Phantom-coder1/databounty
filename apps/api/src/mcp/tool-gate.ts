@@ -60,6 +60,8 @@ const REQUIRES_VERIFIED_EMAIL = new Set([
   "reply_to_issue",
   // routes/v1/submissions.ts POST /:id/dispute-acceptance (requireVerifiedEmail)
   "dispute_accepted_submission",
+  // routes/v1/community.ts POST /requests (requireVerifiedEmail)
+  "request_dataset",
   // routes/v1/audits.ts POST /:id/claim (requireVerifiedEmail)
   "claim_audit",
   // routes/v1/artifacts.ts — every upload-lifecycle route carries

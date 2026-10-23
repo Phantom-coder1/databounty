@@ -55,6 +55,8 @@ import {
   completeMultipartUpload,
   abortMultipartUpload,
   ArtifactUploadValidationError,
+  buildSampleGate,
+  REQUIRED_SPONSOR_EXAMPLES_DEFAULT,
   getArtifactById,
   listUserArtifacts,
   softDeleteArtifact,
@@ -69,6 +71,16 @@ import { SUBMISSION_ITEMS_HARD_MAX } from "./core/limits.js";
 import { getPoolSubmitLimits, SubmissionItemLimitError } from "../services/submission-limits.js";
 import { ingestBlockFor, processingChecksFor, scanProgressFor, validationEtaForSubmission } from "./core/file-status.js";
 import { disputeAcceptedSubmission, listSponsorSubmissionEvidence, SponsorEvidenceError } from "../services/sponsor-evidence.js";
+import {
+  DatasetRequestError,
+  REQUESTS_PER_HOUR,
+  fileDatasetRequest,
+  listMyDatasetRequests,
+  newIdempotencyKey,
+  requestDatasetBody,
+  requestsMineQuery,
+  safeText,
+} from "../services/dataset-requests.js";
 import { phaseSchema, PHASE_STATUSES } from "../lib/public-query.js";
 import {
   AgentIssueCategory,
@@ -252,6 +264,35 @@ function requireWindowId(args: { windowId?: string; auditId?: string }): string 
  * `z.nativeEnum(ArtifactKind)` on `prepare_file_upload` accepted all of them.
  */
 const MCP_UPLOAD_KINDS = [ArtifactKind.sponsor_reference, ArtifactKind.submission_attachment] as const;
+
+/**
+ * `request_dataset`'s arguments: the REST create body (`requestDatasetBody`)
+ * with descriptions an agent can act on, and `idempotencyKey` optional WITHOUT
+ * the body's default. That default mints a fresh key per call, and
+ * zod-to-json-schema would publish one sampled value of it in the tool's input
+ * schema: a client that replayed it would turn every later request into a
+ * "retry" of the first. The tool mints a fresh key itself when none is sent.
+ */
+const requestDatasetSchema = requestDatasetBody.extend({
+  title: requestDatasetBody.shape.title.describe("Short name of the dataset (5–120 characters)."),
+  description: requestDatasetBody.shape.description.describe("What the dataset is for and what one good item contains (20–2000 characters)."),
+  datasetTypeId: requestDatasetBody.shape.datasetTypeId.describe("Id of an ACTIVE dataset type, from list_dataset_categories. Required."),
+  proposedLicense: requestDatasetBody.shape.proposedLicense.describe("Licence the dataset will be published under, as an SPDX id (default CC-BY-4.0)."),
+  language: requestDatasetBody.shape.language.describe("Language of the items. When the dataset type verifies only certain languages it must be one of them; a refusal lists them."),
+  framework: requestDatasetBody.shape.framework.describe("Optional framework or library the items use."),
+  targetItems: requestDatasetBody.shape.targetItems.describe("How many accepted items you want (10–100000, default 100)."),
+  difficultyMix: requestDatasetBody.shape.difficultyMix.describe("mostly_beginner, balanced or mostly_advanced; it must be one the dataset type offers."),
+  auditCoveragePct: requestDatasetBody.shape.auditCoveragePct.describe("Percentage of items a validator also checks by hand (0–100, default 10)."),
+  idempotencyKey: safeText(200).optional().describe("Optional retry key. A key you already used returns that request instead of filing another."),
+});
+
+/** `list_my_dataset_requests`' arguments: `GET /v1/community/requests/mine`'s query, described. */
+const requestsMineSchema = requestsMineQuery.extend({
+  cursor: requestsMineQuery.shape.cursor.describe("nextCursor from the previous page."),
+  limit: requestsMineQuery.shape.limit.describe("Requests per page (1–100, default 20)."),
+  q: requestsMineQuery.shape.q.describe("Optional case-insensitive search over request titles."),
+  status: requestsMineQuery.shape.status.describe("Optional status filter."),
+});
 
 export const tools: McpTool[] = [
   {
@@ -731,6 +772,12 @@ export const tools: McpTool[] = [
       bountyId: z.string().optional().describe("Open community pool this attachment belongs to."),
       submissionId: z.string().optional().describe("Existing submission this attachment belongs to."),
       contributorBatchId: z.string().optional().describe("Your claimed contributor batch, for an attachment uploaded before its submission exists."),
+      // The one sample target the dashboard has and MCP did not: a
+      // requester's reference samples for their own dataset request, which an
+      // admin approves before its pool opens. The service authorizes it
+      // (requester only, request still open to changes, sample cap) exactly
+      // as it does for the REST upload routes.
+      datasetRequestId: z.string().optional().describe("Your own dataset request this reference sample belongs to (kind sponsor_reference), from request_dataset or list_my_dataset_requests."),
     }),
     call: async (args, context) => {
       if (!context?.userId) throw new McpToolError("Authentication required", 401);
@@ -746,6 +793,7 @@ export const tools: McpTool[] = [
             bountyId: args.bountyId,
             submissionId: args.submissionId,
             contributorBatchId: args.contributorBatchId,
+            datasetRequestId: args.datasetRequestId,
           })
         );
         // `fileId` alongside `artifactId`: the id parameter every later file
@@ -826,6 +874,12 @@ export const tools: McpTool[] = [
       bountyId: z.string().optional().describe("Open community pool this attachment belongs to."),
       submissionId: z.string().optional().describe("Existing submission this attachment belongs to."),
       contributorBatchId: z.string().optional().describe("Your claimed contributor batch, for an attachment uploaded before its submission exists."),
+      // The one sample target the dashboard has and MCP did not: a
+      // requester's reference samples for their own dataset request, which an
+      // admin approves before its pool opens. The service authorizes it
+      // (requester only, request still open to changes, sample cap) exactly
+      // as it does for the REST upload routes.
+      datasetRequestId: z.string().optional().describe("Your own dataset request this reference sample belongs to (kind sponsor_reference), from request_dataset or list_my_dataset_requests."),
     }),
     call: async (args, context) => {
       if (!context?.userId) throw new McpToolError("Authentication required", 401);
@@ -840,6 +894,7 @@ export const tools: McpTool[] = [
           bountyId: args.bountyId,
           submissionId: args.submissionId,
           contributorBatchId: args.contributorBatchId,
+          datasetRequestId: args.datasetRequestId,
         });
         // Multipart part targets are only ever issued by a real object-store
         // driver (S3) — never the local-disk fallback (createMultipartUpload
@@ -2053,6 +2108,60 @@ export const tools: McpTool[] = [
         if (err instanceof SponsorEvidenceError) throw new McpToolError(err.message, err.status, err.code);
         throw err;
       }
+    },
+  },
+  // ---------------------------------------------------------------------
+  // Requesting a dataset — also the `sponsor` scope. Both call the same
+  // service functions as `POST /v1/community/requests` and
+  // `GET /v1/community/requests/mine` (services/dataset-requests.ts), so a
+  // request an agent files passes exactly the dashboard's checks and lands in
+  // the same admin review queue. Until these existed requesting was
+  // dashboard-only: both routes are `requireAuth`, a dashboard session, and
+  // refuse every API key.
+  // ---------------------------------------------------------------------
+  {
+    name: "request_dataset",
+    description:
+      "Ask the community for a dataset you need. This files a dataset request for an admin to review; a community pool opens for it only once an admin approves it. " +
+      "Pick datasetTypeId from list_dataset_categories (an ACTIVE type), with a difficultyMix and language that type offers: a refusal names the values it allows. " +
+      `Before the pool can open, attach reference samples: up to ${REQUIRED_SPONSOR_EXAMPLES_DEFAULT} example items, each a file uploaded with prepare_file_upload (kind sponsor_reference, datasetRequestId = this request's id; that tool needs the artifact scope) then complete_file_upload. An admin reviews them, and at least one must be approved. ` +
+      "Follow the request with list_my_dataset_requests. Send an idempotencyKey to make a retry safe: a key you already used returns that request instead of filing another. " +
+      `At most ${REQUESTS_PER_HOUR} requests an hour.`,
+    scope: "sponsor",
+    schema: requestDatasetSchema,
+    call: async (args, context) => {
+      if (!context?.userId) throw new McpToolError("Authentication required", 401);
+      try {
+        const { request, alreadyFiled } = await fileDatasetRequest(context.userId, {
+          ...args,
+          idempotencyKey: args.idempotencyKey ?? newIdempotencyKey(),
+        });
+        return {
+          request,
+          alreadyFiled,
+          nextStep:
+            `Attach up to ${REQUIRED_SPONSOR_EXAMPLES_DEFAULT} reference samples with prepare_file_upload (kind sponsor_reference, datasetRequestId "${request.id}"). ` +
+            "An admin reviews the request and its samples; its pool can open once the request and at least one sample are approved. Follow it with list_my_dataset_requests.",
+        };
+      } catch (err) {
+        if (err instanceof DatasetRequestError) throw new McpToolError(err.message, err.status, err.code);
+        throw err;
+      }
+    },
+  },
+  {
+    name: "list_my_dataset_requests",
+    description:
+      "Your own dataset requests, newest first: where each stands (submitted, under_review, changes_requested, approved, declined, disputed, implemented), the admin's note, " +
+      "its reference samples against the number wanted (sampleGate), and, once approved, the community pool it became (mintedBounty). statusCounts covers all your requests, whatever the filters. " +
+      "Page with `cursor`: pass the previous page's nextCursor while it is not null.",
+    scope: "sponsor",
+    schema: requestsMineSchema,
+    call: async (args, context) => {
+      if (!context?.userId) throw new McpToolError("Authentication required", 401);
+      const page = await listMyDatasetRequests(context.userId, args);
+      const gates = await Promise.all(page.requests.map((r) => buildSampleGate(r.id)));
+      return { ...page, requests: page.requests.map((r, i) => ({ ...r, sampleGate: gates[i] })) };
     },
   },
 ];

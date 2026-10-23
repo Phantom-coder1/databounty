@@ -30,7 +30,7 @@ const SCOPE_COPY: Record<string, { label: string; body: string; icon: IconName }
   contribute: { label: "Submit contribution work", body: "Claim batches and submit or revise assigned dataset items.", icon: "upload" },
   validate: { label: "Review audit work", body: "Claim audits and approve or flag submissions.", icon: "shield" },
   artifact: { label: "Manage your files", body: "Upload, check, and delete files you are allowed to manage.", icon: "file" },
-  sponsor: { label: "Manage your requests", body: "Review and manage your community requests, disputes, and delivery exports.", icon: "users" },
+  sponsor: { label: "Manage your requests", body: "File and manage your community requests, disputes, and delivery exports.", icon: "users" },
   account: { label: "Finish your account setup", body: "Claim your public handle and complete onboarding. Cannot change your email or password.", icon: "award" },
 };
 

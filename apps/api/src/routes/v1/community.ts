@@ -27,8 +27,19 @@ import { requireAuth, requireRole, requireVerifiedEmail, ADMIN_AND_ABOVE_READONL
 import { writeAuditLog } from "../../lib/audit-log.js";
 import { notifyAdmins, notifyUser } from "../../services/notifications.js";
 import { listDatasetRequestSamples, sampleGateFromSamples, serializeArtifact } from "../../services/artifacts.js";
-import { BUNDLED_LICENSE_IDS, datasetLicense } from "../../lib/publication/license-texts.js";
-import { PLANNER_DIFFICULTY_MIXES, canonicalLanguageFor, coherenceProblems, isLaunchableType } from "../../services/planner.js";
+import { canonicalLanguageFor, coherenceProblems } from "../../services/planner.js";
+import {
+  DatasetRequestError,
+  REQUESTS_PER_HOUR,
+  createDatasetRequest,
+  datasetTypeIdField,
+  difficultyMixField,
+  listMyDatasetRequests,
+  proposedLicenseField,
+  requestDatasetBody,
+  requestsMineQuery,
+  safeText,
+} from "../../services/dataset-requests.js";
 import type { DatasetType } from "@prisma/client";
 import { DomainId, DatasetCategory, DatasetRequestStatus, ContributorBatchStatus, CommunityPublicationStatus, KarmaEventType, UserStatus, BountyKind, BountyStatus, Prisma } from "@prisma/client";
 
@@ -178,101 +189,9 @@ async function getKarmaEventsPage(
   return { events: page.map(serializeKarmaEvent), nextCursor, hasMore, eventCount };
 }
 
-/** Characters that must never survive into a stored string this API later
- * serves to anonymous readers: C0/C1 controls (NUL, CR/LF — log and header
- * injection) and the Unicode bidi overrides/isolates, which reorder RENDERED
- * text so a stored value can display as something other than what it is.
- *
- * Checked explicitly rather than left to a length bound or to the licence
- * allowlist below, because `language`/`framework` are free text by design and
- * are projected by `PUBLIC_DATASET_TYPE_SELECT` — they reach an unauthenticated
- * catalog reader once the request is minted, so the rejection has to be
- * deterministic rather than incidental. Verified live before this change: a
- * `proposedLicense` of `\u202eCC-BY-4.0` was accepted, stored, and served
- * verbatim by `GET /v1/bounties/:id`. */
-const UNSAFE_TEXT_CHARS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
-
-/** Bounded, control/bidi-free free text. Every string field on this endpoint
- * needs a `.max()`: without one `language` was stored at 2,500,000 characters
- * (verified live), and `language` is public post-mint. */
-function safeText(max: number, min = 1) {
-  return z
-    .string()
-    .trim()
-    .min(min)
-    .max(max)
-    .refine((v) => !UNSAFE_TEXT_CHARS.test(v), {
-      message: "Value must not contain control or bidirectional-override characters.",
-    });
-}
-
-/** Closed licence allowlist, canonicalised to its SPDX spelling.
- *
- * This was `z.string().trim().min(2)` — no allowlist, no case folding and no
- * upper bound at all — on BOTH create and edit. The value is what contributors
- * are told they are working under and what publication maps to a licence tag,
- * and it is served to anonymous callers by `GET /v1/bounties/:id` once the
- * request is minted, so an unrecognised value is a trust problem rather than a
- * cosmetic one. Verified live before this change: script tags, path traversal,
- * SQL fragments, a 200,000-character string and a bidi-overridden id were all
- * accepted and carried through PATCH -> approve -> mint -> public read.
- *
- * The set is DERIVED from `BUNDLED_LICENSE_IDS` (lib/publication/
- * license-texts.ts) rather than hand-listed a second time: those are exactly
- * the licences whose full text this deployment can actually ship with a
- * published dataset, so a value outside them could never be honoured anyway.
- * `datasetLicense()` is that module's own case-insensitive lookup, which is
- * what folds `cc-by-4.0` onto `CC-BY-4.0` instead of rejecting it — existing
- * rows hold both spellings. Mirrors v1's `COMMUNITY_LICENSES` +
- * case-canonicalising transform (databounty-api/src/routes/v1/community.ts),
- * with the list shared instead of duplicated so it cannot drift from what
- * publication can serve. */
-const proposedLicenseField = safeText(60, 3).transform((raw, ctx) => {
-  const canonical = datasetLicense(raw)?.spdx;
-  if (!canonical) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: `Unsupported licence. Choose one of: ${BUNDLED_LICENSE_IDS.join(", ")}.`,
-    });
-    return z.NEVER;
-  }
-  return canonical;
-});
-
-/** The named presets the planner offers, and the only values
- * `resolvePoolDifficulty` (routes/v1/admin-community.ts) can actually resolve.
- * This was a bare `z.string()`: `"qa_api_freeform_difficulty"` stored fine
- * (verified live) and then resolved to `intermediate` at mint time, pricing
- * karma as though intermediate had been chosen with nothing on the record
- * saying it never was. Shared with the planner's own `answersSchema`
- * (services/planner.ts `PLANNER_DIFFICULTY_MIXES`), which already used an
- * enum, so the two entry points into the same column agree.
- *
- * Unlike v1 there is deliberately NO `custom:<a>/<b>/<c>` spec here: this
- * deployment has no `deriveSlots`, and `resolvePoolDifficulty` collapses the
- * mix to one pool difficulty, so a custom weight spec has nothing to act on
- * and would be silently flattened. */
-const difficultyMixField = z.enum(PLANNER_DIFFICULTY_MIXES);
-
-/** Bounded id, matching v1's `datasetTypeId: z.string().trim().min(1).max(100)`.
- * Was unbounded; a 200KB value was accepted and stored (verified live). */
-const datasetTypeIdField = safeText(100);
-
-const requestDatasetBody = z.object({
-  title: safeText(120, 5),
-  description: z.string().trim().min(20).max(2000),
-  datasetTypeId: datasetTypeIdField.optional(),
-  domain: z.nativeEnum(DomainId).default(DomainId.coding),
-  proposedLicense: proposedLicenseField.default("CC-BY-4.0"),
-  language: safeText(60).optional(),
-  framework: safeText(60).optional(),
-  targetItems: z.number().int().min(10).max(100_000).default(100),
-  difficultyMix: difficultyMixField.optional(),
-  auditCoveragePct: z.number().int().min(0).max(100).default(10),
-  // Bounded too: this is a client-supplied uniqueness key, and it was
-  // `z.string().min(1)` with no ceiling.
-  idempotencyKey: safeText(200).default(() => `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`),
-});
+// The create body (`requestDatasetBody`) and its field validators, which the
+// edit body below reuses, are shared with the MCP tool `request_dataset`, so
+// they live in services/dataset-requests.ts with the rest of request creation.
 
 // Edit body (PATCH /requests/:id): every field the requester supplied on
 // create, all optional so a caller only sends what changed. Each field reuses
@@ -302,13 +221,6 @@ const REQUEST_EDITABLE_STATUSES: DatasetRequestStatus[] = [
   DatasetRequestStatus.changes_requested,
   DatasetRequestStatus.declined,
 ];
-
-const requestsMineQuery = z.object({
-  cursor: z.string().optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
-  q: z.string().trim().max(200).optional(),
-  status: z.nativeEnum(DatasetRequestStatus).optional(),
-});
 
 const resubmitBody = z.object({ note: z.string().trim().max(4_000).optional() }).strict();
 const disputeBody = z.object({ reason: z.string().trim().min(1).max(4_000) }).strict();
@@ -592,7 +504,7 @@ export async function communityRoutes(app: FastifyInstance) {
   // 30, since both of those put NEW work in front of a reviewer. Static
   // because this deployment has no `getRateLimitSettings()` equivalent of
   // v1's admin-configurable `ratelimit.community_requests.*`.
-  app.post("/requests", { preHandler: [requireAuth, requireVerifiedEmail], config: { rateLimit: { max: 20, timeWindow: "1 hour" } } }, async (req, reply) => {
+  app.post("/requests", { preHandler: [requireAuth, requireVerifiedEmail], config: { rateLimit: { max: REQUESTS_PER_HOUR, timeWindow: "1 hour" } } }, async (req, reply) => {
     const user = (req as FastifyRequest & { authedUser: AuthedUser }).authedUser;
     const parsed = requestDatasetBody.safeParse(req.body);
     // `issues[0].message` — the single actionable line — not
@@ -600,61 +512,16 @@ export async function communityRoutes(app: FastifyInstance) {
     // what PATCH /requests/:id and the other routes in this file already do.
     if (!parsed.success) return reply.badRequest(parsed.error.issues[0]?.message ?? "Invalid dataset request.");
 
-    const data = parsed.data;
-
-    // `datasetTypeId` is `.optional()` on this schema (unlike the PATCH body's
-    // required field), but nothing downstream can proceed without one — an
-    // omitted id previously reached `findUnique({ where: { id: undefined } })`
-    // unguarded, which Prisma throws on synchronously with its full schema
-    // dumped into the error, and that raw exception reached the client as an
-    // unhandled 500 (verified live). A missing id is a client input error, not
-    // a server fault.
-    if (!data.datasetTypeId) return reply.badRequest("datasetTypeId is required.");
-
-    // Coherence against the type this request names — the check this door
-    // never had. It previously wrote `datasetTypeId`, `language`,
-    // `difficultyMix` and `auditCoveragePct` straight through without so much
-    // as loading the type, so a direct API call could create a request whose
-    // difficulty mix the type does not offer and whose language its contract
-    // cannot verify. The planner UI blocks all of that client-side; this is
-    // the same rule server-side, shared with `validateAnswers` so the two
-    // creation paths cannot drift.
-    //
-    // Also closes a related gap: `datasetTypeId` had no existence or status
-    // check here at all, so a `platform_review` type was accepted and could
-    // be approved, failing only much later at mint with "not activated yet".
-    const datasetType = await prisma.datasetType.findUnique({ where: { id: data.datasetTypeId } });
-    if (!datasetType) return reply.badRequest("That dataset template does not exist.");
-    if (!isLaunchableType(datasetType)) {
-      return reply.badRequest("This dataset type is not open for new requests yet.");
+    // The type checks (exists, open for requests, coherent with the
+    // language and difficulty asked for) live in the shared service, so the
+    // MCP tool `request_dataset` applies exactly the same ones.
+    try {
+      const request = await createDatasetRequest(user.id, parsed.data);
+      return reply.status(201).send({ request });
+    } catch (err) {
+      if (err instanceof DatasetRequestError) return reply.badRequest(err.message);
+      throw err;
     }
-    const incoherent = coherenceProblems(datasetType, data);
-    if (incoherent.length > 0) return reply.badRequest(incoherent[0]!);
-
-    // Fold the language onto the template's own spelling before storing it
-    // (see canonicalLanguageFor) so listings do not accumulate one row per
-    // casing of the same language.
-    const canonicalLanguage = canonicalLanguageFor(datasetType, data.language);
-
-    const request = await prisma.datasetRequest.create({
-      data: {
-        requesterUserId: user.id,
-        title: data.title,
-        description: data.description,
-        datasetTypeId: data.datasetTypeId,
-        domain: data.domain,
-        proposedLicense: data.proposedLicense,
-        language: canonicalLanguage,
-        framework: data.framework,
-        targetItems: data.targetItems,
-        difficultyMix: data.difficultyMix,
-        auditCoveragePct: data.auditCoveragePct,
-        idempotencyKey: data.idempotencyKey,
-        status: DatasetRequestStatus.submitted,
-      },
-    });
-
-    return reply.status(201).send({ request });
   });
 
   // List Dataset Requests -- ADMIN-ONLY, and a duplicate.
@@ -709,53 +576,7 @@ export async function communityRoutes(app: FastifyInstance) {
     const actor = (req as FastifyRequest & { authedUser: AuthedUser }).authedUser;
     const parsedQ = requestsMineQuery.safeParse(req.query);
     if (!parsedQ.success) return reply.badRequest(parsedQ.error.issues[0]?.message ?? "Invalid request query.");
-    const { cursor, limit, q, status } = parsedQ.data;
-    const requesterUserId = actor.id;
-    const where: Prisma.DatasetRequestWhereInput = {
-      requesterUserId,
-      ...(status ? { status } : {}),
-      ...(q ? { title: { contains: q, mode: Prisma.QueryMode.insensitive } } : {}),
-    };
-    const rows = await prisma.datasetRequest.findMany({
-      where,
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-      take: limit + 1,
-    });
-    const hasMore = rows.length > limit;
-    const requests = rows.slice(0, limit);
-    const nextCursor = hasMore ? requests[requests.length - 1]?.id ?? null : null;
-    // Aggregate status counts for the caller's WHOLE request set, ignoring
-    // `q`/`status`/`cursor` so a filter can never change the totals.
-    const grouped = await prisma.datasetRequest.groupBy({
-      by: ["status"],
-      where: { requesterUserId },
-      _count: { _all: true },
-    });
-    const countOf = (...statuses: DatasetRequestStatus[]) =>
-      grouped.filter((row) => statuses.includes(row.status)).reduce((sum, row) => sum + row._count._all, 0);
-    const statusCounts = {
-      total: grouped.reduce((sum, row) => sum + row._count._all, 0),
-      inReview: countOf(
-        DatasetRequestStatus.submitted,
-        DatasetRequestStatus.under_review,
-        DatasetRequestStatus.changes_requested,
-        DatasetRequestStatus.disputed,
-      ),
-      approved: countOf(DatasetRequestStatus.approved, DatasetRequestStatus.implemented),
-      declined: countOf(DatasetRequestStatus.declined),
-    };
-    const mintedIds = [...new Set(requests.map((r) => r.mintedBountyId).filter((x): x is string => Boolean(x)))];
-    const mintedPools = await Promise.all(mintedIds.map((id) => getCommunityPool(id)));
-    const mintedById = new Map(mintedIds.map((id, i) => [id, mintedPools[i] ?? null]));
-    return reply.send({
-      requests: requests.map((r) => ({
-        ...r,
-        mintedBounty: r.mintedBountyId ? mintedById.get(r.mintedBountyId) ?? null : null,
-      })),
-      nextCursor,
-      statusCounts,
-    });
+    return reply.send(await listMyDatasetRequests(actor.id, parsedQ.data));
   });
 
   // GET /v1/community/requests/:id — a requester's own single request, for

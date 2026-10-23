@@ -100,13 +100,13 @@ A tool runs only if the credential carries its scope. Grant the narrowest set th
 
 | Scope | Tools | Grants |
 |---|---|---|
-| `public` | 6 | Browse pools, categories, stats, contracts, upload limits. No account needed. |
+| `public` | 5 | Browse pools, categories, stats, upload limits. No account needed. |
 | `read` | 9 | Your own work: submissions, progress, karma, notifications, issues, file status. |
-| `contribute` | 6 | Submit, revise, dispute, create an upload-review link, check its status. |
+| `contribute` | 8 | Read a pool's contract; submit, revise, re-run validation, dispute; list your submissions; create an upload-review link, check its status. |
 | `validate` | 5 | Claim audit windows, decide them, and list your own audits. |
 | `artifact` | 7 | Prepare and complete uploads, list and delete your files. |
 | `account` | 10 | Handle, onboarding, attribution preference, notification read-state, issue replies. |
-| `sponsor` | 2 | Evidence for items in your own community request's pool; dispute an accepted item during the window. |
+| `sponsor` | 4 | File a dataset request and follow yours; evidence for items in your own community request's pool; dispute an accepted item during the window. |
 
 **`account` is deliberately separate from `contribute`.** A handle is your permanent public profile URL
 and the name your dataset credit attaches to, so claiming one is its own consent decision rather than a
@@ -115,7 +115,7 @@ or read admin surfaces.
 
 ---
 
-## The 45 tools
+## The 48 tools
 
 ### Discovery — `public`
 
@@ -165,7 +165,7 @@ or read admin surfaces.
 
 | Tool | |
 |---|---|
-| `prepare_file_upload` → `complete_file_upload` | Single-request upload. Use only when `sizeBytes` is under the limit `get_file_upload_limits` reports. |
+| `prepare_file_upload` → `complete_file_upload` | Single-request upload. Use only when `sizeBytes` is under the limit `get_file_upload_limits` reports. For a reference sample, pass `kind: sponsor_reference` and your `datasetRequestId`. |
 | `prepare_large_file_upload` → `complete_large_file_upload` | Real chunked multipart — parallel and resumable, backed by the active storage driver. Supply every part number and ETag on completion. |
 | `abort_large_file_upload` | Cancels an in-flight multipart upload and releases reserved parts. |
 | `list_files` · `delete_file` | Artifacts owned by your account. |
@@ -188,11 +188,15 @@ Check status before assuming it is usable.
 
 ### Sponsoring — `sponsor`
 
-For the person whose community request created the pool. Creating a request stays dashboard-only; these
-tools manage one that already exists.
+For the person asking for a dataset. `request_dataset` files a request, which an admin reviews before a pool
+opens for it; the pool cannot open until at least one of the request's reference samples is approved. Attach
+samples with `prepare_file_upload` (`kind: sponsor_reference`, `datasetRequestId`). The other two tools are for
+the pool your request created.
 
 | Tool | |
 |---|---|
+| `request_dataset` | File a dataset request, checked against its dataset type exactly as the dashboard checks it. Send an `idempotencyKey` to make a retry safe. At most 20 an hour. |
+| `list_my_dataset_requests` | Your requests: status, the admin's note, reference samples against the number wanted (`sampleGate`), and the pool an approved one became. |
 | `get_sponsor_submission_evidence` | Per-stage evidence (dedupe, contamination, execution, LLM review, human audit) for submissions in a pool you own. Owner-only — a request you do not own returns nothing, not a partial view. |
 | `dispute_accepted_submission` | Dispute an item that was accepted into your pool, while its dispute window is open. Routes to a handler; it never reverses the acceptance on its own. Outside the window it is refused. |
 

@@ -53,6 +53,9 @@ describe("sponsor-scoped MCP tools", () => {
     expect(tools.filter((t) => t.scope === "sponsor").map((t) => t.name).sort()).toEqual([
       "dispute_accepted_submission",
       "get_sponsor_submission_evidence",
+      // Requesting a dataset (tools.request-dataset.unit.test.ts).
+      "list_my_dataset_requests",
+      "request_dataset",
     ]);
     // Names are unique across the whole registry.
     expect(new Set(tools.map((t) => t.name)).size).toBe(tools.length);

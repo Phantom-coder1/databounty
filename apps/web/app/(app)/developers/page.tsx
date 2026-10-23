@@ -42,7 +42,7 @@ const SCOPE_OPTIONS: { value: ApiKeyScope; label: string; desc: string }[] = [
   { value: "contribute", label: "contribute", desc: "Claim batches, submit dataset items." },
   { value: "validate", label: "validate", desc: "Claim audits and submit approve/reject decisions." },
   { value: "artifact", label: "artifact", desc: "Prepare and complete authorized file uploads." },
-  { value: "sponsor", label: "sponsor", desc: "Review and manage your community requests and datasets." },
+  { value: "sponsor", label: "sponsor", desc: "File, review and manage your community requests and datasets." },
 ];
 
 // This dashboard is the public MCP gateway. The API-provided developer surface

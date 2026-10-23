@@ -405,6 +405,14 @@ function argsFor(toolName: string): Record<string, unknown> {
       return { bountyId: NO_SUCH_ID };
     case "dispute_accepted_submission":
       return { submissionId: NO_SUCH_ID, reason: FlagReason.other, argument: "scope-matrix denial probe argument" };
+    case "request_dataset":
+      // An unknown type: a leak through the gate is refused by the service
+      // rather than filing a real request in the admin queue.
+      return {
+        title: "scope-matrix denial probe",
+        description: "scope-matrix denial probe: this request must never exist",
+        datasetTypeId: NO_SUCH_ID,
+      };
 
     default:
       // Every remaining tool takes only optional arguments; the registry guard

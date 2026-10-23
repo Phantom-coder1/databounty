@@ -27,6 +27,7 @@ const REQUIRES_ONBOARDING = new Set([
   "rerun_submission_validation",
   "dispute_submission",
   "dispute_accepted_submission",
+  "request_dataset",
   "claim_audit",
   "submit_decisions",
   "create_upload_review_link",
