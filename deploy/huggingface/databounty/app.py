@@ -27,6 +27,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 
 import account
 import agent_tools
@@ -326,6 +327,24 @@ demo.queue(default_concurrency_limit=8)
 # All registered before Gradio's mount at "/", so they answer first.
 
 server = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+
+class _CompressPage:
+    """Compress the page, its files and its JSON API: app.js is about a quarter of its size
+    gzipped, which matters for visitors far from Hugging Face's servers. Gradio's own routes, the
+    MCP server among them, pass through untouched."""
+
+    def __init__(self, app):
+        self.app = app
+        self.gzip = GZipMiddleware(app, minimum_size=1024)
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get("path", "") if scope["type"] == "http" else ""
+        page = path == "/" or path.startswith(("/static/", "/api/"))
+        await (self.gzip if page else self.app)(scope, receive, send)
+
+
+server.add_middleware(_CompressPage)
 NO_STORE = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
 server.include_router(webapi.router)
 server.add_exception_handler(webapi.ApiError, webapi.api_error)

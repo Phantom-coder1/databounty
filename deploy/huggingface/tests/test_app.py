@@ -60,6 +60,12 @@ class AppMountTest(unittest.TestCase):
         # index.html versions app.css and app.js, so browsers keep those; anything else, for an hour.
         self.assertEqual(client.get("/static/app.js?v=9").headers["cache-control"], "public, max-age=31536000, immutable")
         self.assertEqual(client.get("/static/logo.svg").headers["cache-control"], "public, max-age=3600")
+        # The page's own routes are compressed; Gradio's, the MCP server among them, are not.
+        for path in ("/static/app.js?v=9", "/api/me"):
+            with self.subTest(path):
+                self.assertEqual(client.get(path, headers={"Accept-Encoding": "gzip"}).headers.get("content-encoding"), "gzip" if "static" in path else None)
+        gradio_route = client.get("/gradio_api/info", headers={"Accept-Encoding": "gzip"})
+        self.assertNotEqual(gradio_route.headers.get("content-encoding"), "gzip")
         self.assertEqual(client.get("/api/me").status_code, 401)
         self.assertEqual(client.get("/api/me").json(), {"error": "Sign in to continue."})
 
