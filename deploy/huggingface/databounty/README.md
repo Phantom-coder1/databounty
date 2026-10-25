@@ -35,6 +35,7 @@ submission and human validators review the results. Finished datasets are publis
 
 It looks and works like the console on databounty.io:
 
+- **Home**: what DataBounty is, its live totals, the three ways to take part and a few open pools.
 - **Contribute**: your karma, every open pool, and your submissions. Open a pool to see what it wants and how items
   are checked, then add items one at a time or many from a file.
 - **Validate**: review other people's items. Claim an open audit, check each item against the pool's spec and its

@@ -66,6 +66,7 @@ function toast(message) {
 }
 
 const ICONS = {
+  home: '<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   code: '<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/>',
   database: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/>',
   trophy: '<path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>',
@@ -239,7 +240,8 @@ async function signOut() {
 // --- Sidebar --------------------------------------------------------------------------------------
 
 const NAV = [
-  ["#/", "code", "Contribute"],
+  ["#/", "home", "Home"],
+  ["#/contribute", "code", "Contribute"],
   ["#/validate", "shield", "Validate"],
   ["#/sponsor", "briefcase", "Sponsor"],
   ["#/datasets", "database", "Datasets"],
@@ -250,13 +252,14 @@ const NAV = [
 
 function activeNav() {
   const hash = location.hash || "#/";
+  if (hash === "#/" || hash === "#") return "#/";
   if (hash.startsWith("#/validate") || hash.startsWith("#/audit/")) return "#/validate";
   if (hash.startsWith("#/sponsor")) return "#/sponsor";
   if (hash.startsWith("#/datasets")) return "#/datasets";
   if (hash.startsWith("#/leaderboard") || hash.startsWith("#/u/")) return "#/leaderboard";
   if (hash.startsWith("#/agents")) return "#/agents";
   if (hash.startsWith("#/about")) return "#/about";
-  return "#/";
+  return "#/contribute"; // the workspace, a pool, a submission
 }
 
 // The sidebar's karma box. `tiers` is null until the tier ladder arrives.
@@ -303,7 +306,8 @@ function ticket() {
 }
 
 const ROUTES = [
-  [/^#\/?$/, () => pageContribute()],
+  [/^#\/?$/, () => pageHome()],
+  [/^#\/contribute$/, () => pageContribute()],
   [/^#\/pool\/([\w-]+)$/, (id) => pagePool(id)],
   [/^#\/submission\/([\w-]+)$/, (id) => pageSubmission(id)],
   [/^#\/validate$/, () => pageValidate()],
@@ -341,6 +345,58 @@ document.addEventListener("click", (event) => {
     navigator.clipboard?.writeText(el.dataset.copy || "").then(() => toast("Copied."), () => toast("Couldn't copy. Select the text instead."));
   }
 });
+
+// --- Home -------------------------------------------------------------------------------------------
+
+const ROLES = [
+  ["#/contribute", "code", "Contribute", "Add items to open pools. Earn karma for each one reviewers accept."],
+  ["#/validate", "shield", "Validate", "Check other people's items against the pool's spec. Earn karma for each decision."],
+  ["#/sponsor", "briefcase", "Sponsor", "Ask for the dataset you need, and follow the items that come in."],
+];
+
+function statTiles(s) {
+  const tiles = [["items accepted", s.acceptedItems], ["dataset programmes", s.programs], ["contributors", s.contributors], ["datasets published", s.publishedDatasets], ["karma awarded", s.totalKarmaAwarded]];
+  return html`<div class="tiles">${tiles.map(([label, value]) => html`<div class="card tile"><div class="micro">${label}</div><b>${fmt(value)}</b></div>`)}</div>`;
+}
+
+async function pageHome() {
+  const live = ticket();
+  const me = state.me;
+  const name = me ? me.displayName || (me.handle ? `@${me.handle}` : "") : "";
+  mount($("#page"), html`
+    <section class="card hero">
+      <div>
+        <div class="micro">${me ? `welcome back${name ? `, ${name}` : ""}` : "databounty on hugging face"}</div>
+        <h1>Open datasets for AI, built by the community</h1>
+        <p>Sponsors ask for a dataset. Contributors add items, validators check every one, and the finished dataset is published on the Hugging Face Hub.</p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#/contribute">${icon("code")} start contributing</a>
+          <a class="btn" href="#/validate">${icon("shield")} review items</a>
+          <a class="btn" href="#/sponsor">${icon("briefcase")} request a dataset</a>
+        </div>
+      </div>
+      <img class="hero-mark" src="/static/logo.svg" alt="">
+    </section>
+    ${me && me.step !== "ready" ? html`<div style="margin-top:14px">${setupCard(me)}</div>` : ""}
+    <div id="home-tiles" style="margin-top:14px"><div class="skeleton"></div></div>
+    <h2 class="section">Three ways to take part</h2>
+    <div class="roles">${ROLES.map(([href, ic, title, text]) => html`<a class="card role" href="${href}"><span class="role-icon">${icon(ic)}</span><b>${title}</b><span class="small muted">${text}</span><span class="row-arrow">${icon("arrow")}</span></a>`)}</div>
+    <h2 class="section">Open pools</h2>
+    <p class="section-sub">A few of the pools taking items now.</p>
+    <div class="rows" id="home-pools">${[1, 2, 3].map(() => html`<div class="skeleton"></div>`)}</div>
+    <p style="margin-top:12px"><a class="btn btn-sm" href="#/contribute">see all open pools ${icon("arrow")}</a></p>`);
+  if (me && me.step !== "ready") wireSetup();
+  overview().then((data) => { if (live()) mount($("#home-tiles"), statTiles(data.stats || {})); });
+  if (!state.pools) {
+    try { state.pools = (await api("/api/pools")).pools || []; } catch (e) {
+      if (live()) mount($("#home-pools"), notice("warn", e.message));
+      return;
+    }
+  }
+  if (!live()) return;
+  const pools = state.pools.slice(0, 4);
+  mount($("#home-pools"), pools.length ? pools.map(poolRow) : html`<div class="card empty">No pools are open right now. New ones open as sponsors' requests are approved.</div>`);
+}
 
 // --- Contributor workspace ----------------------------------------------------------------------------
 
@@ -522,7 +578,7 @@ function subRow(s) {
 
 // --- A pool --------------------------------------------------------------------------------------
 
-const backToPools = () => html`<a class="back" href="#/">${icon("back")} all pools</a>`;
+const backToPools = () => html`<a class="back" href="#/contribute">${icon("back")} all pools</a>`;
 const labelFor = (c, key) => (c.fields.find((f) => f.key === key) || { label: key }).label;
 
 async function pagePool(id) {
@@ -577,7 +633,7 @@ function renderPoolWork(c) {
   const box = $("#pool-work");
   const spaced = (content) => html`<div style="margin-top:22px">${content}</div>`;
   if (!state.me) { mount(box, spaced(signInCard())); return; }
-  if (state.me.step !== "ready") { mount(box, spaced(notice("warn", raw('Finish setting up your account on the <a href="#/">Contribute</a> page first.')))); return; }
+  if (state.me.step !== "ready") { mount(box, spaced(notice("warn", raw('Finish setting up your account on the <a href="#/contribute">Contribute</a> page first.')))); return; }
   if (!c.open) { mount(box, spaced(notice("warn", `This pool isn't taking items right now. ${c.nextStep}`))); return; }
   const hasFiles = c.fields.some((f) => f.kind === "file");
   mount(box, html`
@@ -686,7 +742,7 @@ function wireItemForm(c) {
       if (r.duplicate) {
         mount(out, notice("warn", "The same item is already in this pool, so it wasn't added."));
       } else {
-        mount(out, notice("ok", html`<b>Submitted ✓</b> Automated checks start now, then a reviewer takes a look.${c.karma ? html` You earn <b>+${fmt(c.karma)} karma</b> if it's accepted.` : ""} <a href="#/">See it in My submissions →</a>`));
+        mount(out, notice("ok", html`<b>Submitted ✓</b> Automated checks start now, then a reviewer takes a look.${c.karma ? html` You earn <b>+${fmt(c.karma)} karma</b> if it's accepted.` : ""} <a href="#/contribute">See it in My submissions →</a>`));
         form.reset();
         state.subs = null;
       }
@@ -768,7 +824,7 @@ async function previewBulk(c, file) {
     try {
       const r = await api(`/api/pools/${encodeURIComponent(c.id)}/bulk/send`, { method: "POST", body: { method: $("#bulk-method").value, rows: send } });
       const extra = [r.duplicates ? `${r.duplicates} already in the pool, so not added.` : "", r.skipped ? `${r.skipped} didn't pass the check, so not sent.` : ""].filter(Boolean).join(" ");
-      mount($("#bulk-out"), html`${notice(r.sent ? "ok" : "warn", html`<b>${r.sent ? `${r.sent} item${r.sent === 1 ? "" : "s"} sent ✓` : "Nothing was sent."}</b> ${extra} <a href="#/">See them in My submissions →</a>`)}${r.problem ? html`<div style="margin-top:8px">${notice("warn", r.problem)}</div>` : ""}`);
+      mount($("#bulk-out"), html`${notice(r.sent ? "ok" : "warn", html`<b>${r.sent ? `${r.sent} item${r.sent === 1 ? "" : "s"} sent ✓` : "Nothing was sent."}</b> ${extra} <a href="#/contribute">See them in My submissions →</a>`)}${r.problem ? html`<div style="margin-top:8px">${notice("warn", r.problem)}</div>` : ""}`);
       state.subs = null;
       sent = r.sent > 0;
     } catch (e) {
@@ -785,7 +841,7 @@ async function previewBulk(c, file) {
 async function pageSubmission(id) {
   const live = ticket();
   const page = $("#page");
-  const back = html`<a class="back" href="#/">${icon("back")} contributor workspace</a>`;
+  const back = html`<a class="back" href="#/contribute">${icon("back")} contributor workspace</a>`;
   if (!state.session) { mount(page, html`${back}${signInCard()}`); return; }
   mount(page, html`${back}<div class="skeleton" style="height:180px"></div>`);
   let s;
@@ -1312,9 +1368,7 @@ async function pageAbout() {
   const s = data.stats || {};
   const pct = s.targetItems ? Math.min(100, (100 * (s.clearedItems || 0)) / s.targetItems) : 0;
   mount($("#about"), html`
-    <div class="tiles">
-      ${[["items accepted", s.acceptedItems], ["dataset programmes", s.programs], ["contributors", s.contributors], ["datasets published", s.publishedDatasets], ["karma awarded", s.totalKarmaAwarded]].map(([label, value]) => html`<div class="card tile"><div class="micro">${label}</div><b>${fmt(value)}</b></div>`)}
-    </div>
+    ${statTiles(s)}
     <div class="card pad" style="margin-top:12px"><div class="row between"><span class="micro">progress across every programme</span><span class="mono small muted">${fmt(s.clearedItems)} of ${fmt(s.targetItems)} items cleared the automated checks</span></div><div class="progress" style="margin-top:10px;height:6px"><span style="width:${pct.toFixed(1)}%;background:var(--lime-ink)"></span></div></div>
     <h2 class="section">Karma tiers</h2>
     <p class="section-sub">Your standing is public and permanent.</p>

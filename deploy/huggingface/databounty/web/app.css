@@ -422,3 +422,21 @@ table.list tr.click:hover td { background: var(--panel); }
   .item-list .t { display: none; }
   .item-card { padding: 18px 16px; }
 }
+
+/* Home */
+.hero { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 24px; padding: 28px 30px; }
+.hero h1 { margin: 6px 0 8px; font-family: var(--font-mono); font-size: 26px; line-height: 1.2; font-weight: 600; letter-spacing: -0.01em; }
+.hero p { margin: 0; max-width: 62ch; color: var(--ink-soft); font-size: 14.5px; line-height: 1.55; }
+.hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.hero-mark { width: 92px; height: 92px; }
+.roles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.role { position: relative; display: grid; align-content: start; gap: 6px; padding: 18px 44px 18px 20px; color: inherit; text-decoration: none; }
+.role:hover { border-color: #cfd3c6; box-shadow: 0 1px 2px rgba(20, 23, 15, .04); }
+.role b { font-family: var(--font-mono); font-size: 15px; font-weight: 600; }
+.role-icon { display: inline-flex; width: 34px; height: 34px; align-items: center; justify-content: center; border-radius: 9px; background: var(--accent-soft); border: 1px solid var(--accent-soft-border); color: var(--lime-ink); }
+@media (max-width: 900px) {
+  .hero { grid-template-columns: minmax(0, 1fr); padding: 22px; }
+  .hero h1 { font-size: 21px; }
+  .hero-mark { display: none; }
+  .roles { grid-template-columns: minmax(0, 1fr); }
+}
