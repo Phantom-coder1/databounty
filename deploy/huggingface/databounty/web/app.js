@@ -282,7 +282,7 @@ async function renderSidebar() {
       <div class="user-chip"><div class="avatar">${initial(me.displayName || me.handle)}</div><div class="who"><b>${me.displayName || "You"}</b><span>${me.handle ? "@" + me.handle : me.email}</span></div></div>
       <button class="side-link row" data-action="sign-out">${icon("logout")} sign out</button>`;
   } else {
-    bottom = html`<div class="side-signin"><p>Sign in to contribute items and earn karma.</p><button class="btn btn-lime btn-sm" data-action="sign-in">sign in ${icon("arrow")}</button></div>`;
+    bottom = html`<div class="side-signin"><p data-signin-note>Sign in to contribute items and earn karma.</p><button class="btn btn-lime btn-sm" data-action="sign-in">sign in ${icon("arrow")}</button></div>`;
   }
   mount($("#sidebar"), html`
     <a class="brand" href="#/"><img src="/static/logo.svg" alt=""><span>DATA<b>/</b>BOUNTY</span></a>
