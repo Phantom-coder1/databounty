@@ -13,10 +13,8 @@ const state = {
   session: read(localStorage, SESSION_KEY),
   me: null,
   pools: null,
-  subs: null,
   filters: { q: "", level: "" },
   poolLimit: POOL_PAGE,
-  subsFilter: "all",
 };
 
 // --- Small helpers ------------------------------------------------------------------------------
@@ -118,7 +116,7 @@ async function api(path, { method = "GET", body, form } = {}) {
   try { data = await res.json(); } catch { data = null; }
   if (res.status === 401 && state.session) {
     forget();
-    renderSidebar();
+    route();
     toast("Your sign-in ended. Sign in again to continue.");
   }
   if (!res.ok) {
@@ -138,19 +136,6 @@ function overview() {
     return { stats: {}, tiers: [] };
   });
   return overviewLoad;
-}
-
-function tierFor(karma, tiers) {
-  const ladder = [...(tiers || [])].sort((a, b) => (a.minKarma || 0) - (b.minKarma || 0));
-  let current = ladder[0] || null;
-  let next = null;
-  for (const tier of ladder) {
-    if ((tier.minKarma || 0) <= karma) current = tier;
-    else { next = tier; break; }
-  }
-  const floor = current ? current.minKarma || 0 : 0;
-  const pct = next ? Math.max(0, Math.min(100, Math.round(((karma - floor) / Math.max(1, next.minKarma - floor)) * 100))) : 100;
-  return { current, next, pct };
 }
 
 // --- Signing in (account.py explains the whole flow) --------------------------------------------------
@@ -213,7 +198,6 @@ async function claimSignIn(nonce = read(sessionStorage, NONCE_KEY)) {
 
 async function afterSignIn() {
   await loadMe();
-  state.subs = null;
   toast(state.me ? `Signed in as ${state.me.displayName || "@" + state.me.handle}.` : "Signed in.");
   route();
 }
@@ -226,7 +210,6 @@ async function loadMe() {
 function forget() {
   state.session = null;
   state.me = null;
-  state.subs = null;
   write(localStorage, SESSION_KEY, null);
 }
 
@@ -262,38 +245,13 @@ function activeNav() {
   return "#/contribute"; // the workspace, a pool, a submission
 }
 
-// The sidebar's karma box. `tiers` is null until the tier ladder arrives.
-function sideKarma(me, tiers) {
-  const { current, next, pct } = tiers ? tierFor(me.karma || 0, tiers) : { current: null, next: null, pct: 0 };
-  return html`
-    <div class="row between"><span class="micro-dark">karma</span>${current ? html`<span class="chip-dark">${current.label}</span>` : ""}</div>
-    <div class="row between" style="margin-top:6px"><span class="pts">${fmt(me.karma || 0)} pts</span>${next ? html`<span class="to">${fmt(next.minKarma - (me.karma || 0))} to ${next.label}</span>` : ""}</div>
-    <div class="bar-dark"><span style="width:${pct}%"></span></div>`;
-}
-
-async function renderSidebar() {
+function renderSidebar() {
   const active = activeNav();
-  const me = state.me;
-  let bottom;
-  if (me) {
-    // Drawn at once; the tier fills in when it arrives, so the menu never waits on it.
-    bottom = html`
-      <div class="side-karma" id="side-karma">${sideKarma(me, null)}</div>
-      <div class="user-chip"><div class="avatar">${initial(me.displayName || me.handle)}</div><div class="who"><b>${me.displayName || "You"}</b><span>${me.handle ? "@" + me.handle : me.email}</span></div></div>
-      <button class="side-link row" data-action="sign-out">${icon("logout")} sign out</button>`;
-  } else {
-    bottom = html`<div class="side-signin"><p data-signin-note>Sign in to contribute items and earn karma.</p><button class="btn btn-lime btn-sm" data-action="sign-in">sign in ${icon("arrow")}</button></div>`;
-  }
   mount($("#sidebar"), html`
     <a class="brand" href="#/"><img src="/static/logo.svg" alt=""><span>DATA<b>/</b>BOUNTY</span></a>
     <nav class="nav">${NAV.map(([href, ic, label]) => html`<a href="${href}" class="${href === active ? "active" : ""}">${icon(ic)}${label}</a>`)}</nav>
-    ${me ? html`<button class="top-action" data-action="sign-out" title="Sign out" aria-label="Sign out">${icon("logout")}</button>`
-      : html`<button class="top-action" data-action="sign-in">sign in</button>`}
-    <div class="side-bottom">${bottom}</div>`);
-  if (!me) return;
-  const { tiers } = await overview();
-  const box = $("#side-karma");
-  if (box && state.me === me) mount(box, sideKarma(me, tiers));
+    <button class="top-action" data-action="sign-in">sign in</button>
+    <div class="side-bottom"><div class="side-signin"><p data-signin-note>Sign in to contribute items and earn karma.</p><button class="btn btn-lime btn-sm" data-action="sign-in">sign in ${icon("arrow")}</button></div></div>`);
 }
 
 // --- Routing --------------------------------------------------------------------------------------
@@ -322,6 +280,9 @@ const ROUTES = [
 
 function route() {
   const hash = location.hash || "#/";
+  // Signed in, the Space is drawn like the DataBounty console (console.js).
+  if (state.me && typeof consoleRoute === "function") { consoleRoute(hash); return; }
+  document.body.classList.remove("console", "c-collapsed");
   renderSidebar();
   for (const [pattern, page] of ROUTES) {
     const match = hash.match(pattern);
@@ -361,12 +322,10 @@ function statTiles(s) {
 
 async function pageHome() {
   const live = ticket();
-  const me = state.me;
-  const name = me ? me.displayName || (me.handle ? `@${me.handle}` : "") : "";
   mount($("#page"), html`
     <section class="card hero">
       <div>
-        <div class="micro">${me ? `welcome back${name ? `, ${name}` : ""}` : "databounty on hugging face"}</div>
+        <div class="micro">databounty on hugging face</div>
         <h1>Open datasets for AI, built by the community</h1>
         <p>Sponsors ask for a dataset. Contributors add items, validators check every one, and the finished dataset is published on the Hugging Face Hub.</p>
         <div class="hero-actions">
@@ -377,7 +336,6 @@ async function pageHome() {
       </div>
       <img class="hero-mark" src="/static/logo.svg" alt="">
     </section>
-    ${me && me.step !== "ready" ? html`<div style="margin-top:14px">${setupCard(me)}</div>` : ""}
     <div id="home-tiles" style="margin-top:14px"><div class="skeleton"></div></div>
     <h2 class="section">Three ways to take part</h2>
     <div class="roles">${ROLES.map(([href, ic, title, text]) => html`<a class="card role" href="${href}"><span class="role-icon">${icon(ic)}</span><b>${title}</b><span class="small muted">${text}</span><span class="row-arrow">${icon("arrow")}</span></a>`)}</div>
@@ -385,7 +343,6 @@ async function pageHome() {
     <p class="section-sub">A few of the pools taking items now.</p>
     <div class="rows" id="home-pools">${[1, 2, 3].map(() => html`<div class="skeleton"></div>`)}</div>
     <p style="margin-top:12px"><a class="btn btn-sm" href="#/contribute">see all open pools ${icon("arrow")}</a></p>`);
-  if (me && me.step !== "ready") wireSetup();
   overview().then((data) => { if (live()) mount($("#home-tiles"), statTiles(data.stats || {})); });
   if (!state.pools) {
     try { state.pools = (await api("/api/pools")).pools || []; } catch (e) {
@@ -411,77 +368,11 @@ function signInCard(title = "Sign in to contribute", text = raw("Earn <b>karma</
   </div>`;
 }
 
-function setupCard(me) {
-  if (me.step === "permission") {
-    return html`<div class="card setup-card"><h2>Allow contributing</h2><p>The Space wasn't allowed to submit for you. Sign out, sign in again, and keep <b>contribute</b> ticked.</p><button class="btn" data-action="sign-out">sign out</button></div>`;
-  }
-  if (me.step === "verify_email") {
-    return html`<div class="card setup-card"><h2>Verify your email</h2><p>Open the link we sent to your inbox, then come back here.</p>
-      <div class="row wrap"><button class="btn btn-primary" id="setup-verified">I've verified my email</button><button class="btn" id="setup-resend">send the email again</button></div><div id="setup-msg" style="margin-top:12px"></div></div>`;
-  }
-  if (me.step === "choose_handle") {
-    return html`<div class="card setup-card"><h2>Choose a username</h2><p>Your contributions are credited to it, on your public profile at databounty.io/<i>username</i>.</p>
-      <div class="row wrap"><input class="input" id="setup-handle" placeholder="username" value="${me.suggestedHandle || ""}" maxlength="20"><button class="btn" id="setup-check">check</button><button class="btn btn-primary" id="setup-finish">continue</button></div><div id="setup-msg" style="margin-top:12px"></div></div>`;
-  }
-  return html`<div class="card setup-card"><h2>One last step</h2><p>Finish setting up your account to start contributing.</p><button class="btn btn-primary" id="setup-finish">finish setup</button><div id="setup-msg" style="margin-top:12px"></div></div>`;
-}
-
-function wireSetup() {
-  const msg = (tone, text) => mount($("#setup-msg"), notice(tone, text));
-  const handle = () => ($("#setup-handle")?.value || "").trim();
-  $("#setup-verified")?.addEventListener("click", async () => { await loadMe(); route(); });
-  $("#setup-resend")?.addEventListener("click", async () => {
-    try {
-      const r = await api("/api/me/resend-verification", { method: "POST" });
-      msg("ok", r.alreadyVerified ? "Your email is already verified." : "Sent. Open the link in that email, then press I've verified my email.");
-    } catch (e) { msg("warn", e.message); }
-  });
-  $("#setup-check")?.addEventListener("click", async () => {
-    try {
-      const r = await api("/api/me/handle-check", { method: "POST", body: { handle: handle() } });
-      msg(r.available ? "ok" : "warn", r.available ? `@${r.handle} is available.` : `@${r.handle} isn't available: ${r.reason || "it is taken"}.`);
-    } catch (e) { msg("warn", e.message); }
-  });
-  $("#setup-finish")?.addEventListener("click", async () => {
-    try {
-      await api("/api/me/finish-setup", { method: "POST", body: { handle: handle() } });
-      await loadMe();
-      route();
-    } catch (e) { msg("warn", e.message); }
-  });
-}
-
-async function renderWorkspaceTop(live) {
-  const top = $("#ws-top");
-  const me = state.me;
-  if (!me) { mount(top, signInCard()); return; }
-  if (me.step !== "ready") { mount(top, setupCard(me)); wireSetup(); return; }
-  const { tiers } = await overview();
-  if (!live()) return;
-  const { current, next, pct } = tierFor(me.karma || 0, tiers);
-  mount(top, html`
-    <div class="card karma-card">
-      <div class="karma-icon">${icon("sparkles")}</div>
-      <div>
-        <div class="karma-num"><b>${fmt(me.karma || 0)}</b><span class="mono small muted">karma</span>${current ? html`<span class="chip">${current.label}</span>` : ""}</div>
-        <div class="mono small muted" style="margin-top:6px">@${me.handle}</div>
-      </div>
-      <div class="karma-next">
-        <div class="row"><span class="mono small muted">${next ? `next tier · ${next.label}` : "top tier"}</span><span class="mono small">${next ? `${fmt(next.minKarma - (me.karma || 0))} to go` : ""}</span></div>
-        <div class="progress"><span style="width:${pct}%"></span></div>
-      </div>
-      ${me.profileUrl ? html`<a class="pill pill-karma plain" href="${safeUrl(me.profileUrl)}" target="_blank" rel="noopener">public profile ›</a>` : ""}
-    </div>
-    <div class="card stats" id="ws-stats">${["submitted", "accepted", "needs your fix", "in progress"].map((label) => html`<div class="stat"><div class="micro">${label}</div><b>—</b></div>`)}</div>`);
-  // The submissions may have arrived first.
-  if (state.subs) renderStats();
-}
-
 async function pageContribute() {
   const live = ticket();
   mount($("#page"), html`
     <header class="page-head"><h1 class="title">Contributor workspace</h1><p class="sub">Open community pools, your submissions and your karma.</p></header>
-    <div id="ws-top" class="stack"></div>
+    <div class="stack">${signInCard()}</div>
     <h2 class="section">Available work</h2>
     <p class="section-sub">Pick a pool and submit items directly. Every item is checked automatically, then reviewed by a person.</p>
     <div class="filters">
@@ -489,12 +380,9 @@ async function pageContribute() {
       <select class="select" id="pool-level" aria-label="Level"><option value="">All levels</option>${LEVELS.map((l) => html`<option value="${l}" ${state.filters.level === l ? raw("selected") : ""}>${cap(l)}</option>`)}</select>
       <span class="count" id="pool-count"></span>
     </div>
-    <div class="rows" id="pool-list">${[1, 2, 3].map(() => html`<div class="skeleton"></div>`)}</div>
-    <div id="ws-subs"></div>`);
-  renderWorkspaceTop(live);
+    <div class="rows" id="pool-list">${[1, 2, 3].map(() => html`<div class="skeleton"></div>`)}</div>`);
   $("#pool-q").addEventListener("input", (e) => { state.filters.q = e.target.value; state.poolLimit = POOL_PAGE; renderPoolList(); });
   $("#pool-level").addEventListener("change", (e) => { state.filters.level = e.target.value; state.poolLimit = POOL_PAGE; renderPoolList(); });
-  if (state.me && state.me.step === "ready") renderMySubmissions(live);
   if (!state.pools) {
     try { state.pools = (await api("/api/pools")).pools || []; } catch (e) {
       if (live()) mount($("#pool-list"), notice("warn", e.message));
@@ -530,42 +418,6 @@ function poolRow(p) {
     <div class="mono small">${typeof p.karma_per_accepted_item === "number" ? html`<span class="karma-text">+${fmt(p.karma_per_accepted_item)} karma / item</span> · ` : ""}<span class="muted">${p.dataset_type}${p.language ? ` · ${p.language}` : ""}${p.in_review_items ? ` · ${fmt(p.in_review_items)} in review` : ""}</span></div>
     <span class="row-arrow">${icon("arrow")}</span>
   </a>`;
-}
-
-const SUB_FILTERS = [["all", "all"], ["action", "needs your fix"], ["progress", "in progress"], ["accepted", "accepted"]];
-
-async function renderMySubmissions(live) {
-  mount($("#ws-subs"), html`<h2 class="section">My submissions</h2><p class="section-sub">Everything you've sent and where it stands. Open an item for its checks.</p><div id="subs-body"><div class="skeleton"></div></div>`);
-  if (!state.subs) {
-    try { state.subs = await api("/api/submissions"); } catch (e) {
-      if (live()) mount($("#subs-body"), notice("warn", e.message));
-      return;
-    }
-  }
-  if (!live()) return;
-  renderStats();
-  renderSubsList();
-}
-
-function renderStats() {
-  const items = (state.subs && state.subs.items) || [];
-  const count = (group) => items.filter((s) => s.statusGroup === group).length;
-  const stat = (ic, label, value, tone) => html`<div class="stat ${tone ? `stat-${tone}` : ""}"><div class="micro">${icon(ic)}${label}</div><b>${fmt(value)}</b></div>`;
-  mount($("#ws-stats"), [
-    stat("upload", "submitted", (state.subs && state.subs.total) ?? items.length),
-    stat("check", "accepted", count("accepted"), "ok"),
-    stat("alert", "needs your fix", count("action"), "warn"),
-    stat("refresh", "in progress", count("progress")),
-  ]);
-}
-
-function renderSubsList() {
-  const items = (state.subs && state.subs.items) || [];
-  const shown = state.subsFilter === "all" ? items : items.filter((s) => s.statusGroup === state.subsFilter);
-  mount($("#subs-body"), html`
-    <div class="tabs-pills">${SUB_FILTERS.map(([key, label]) => html`<button class="${state.subsFilter === key ? "on" : ""}" data-subs="${key}">${label}</button>`)}</div>
-    <div class="rows">${shown.length ? shown.map(subRow) : html`<div class="card empty">${items.length ? "Nothing here." : "Nothing yet. Items you submit show up here."}</div>`}</div>`);
-  $$("[data-subs]").forEach((b) => b.addEventListener("click", () => { state.subsFilter = b.dataset.subs; renderSubsList(); }));
 }
 
 function subRow(s) {
@@ -744,7 +596,6 @@ function wireItemForm(c) {
       } else {
         mount(out, notice("ok", html`<b>Submitted ✓</b> Automated checks start now, then a reviewer takes a look.${c.karma ? html` You earn <b>+${fmt(c.karma)} karma</b> if it's accepted.` : ""} <a href="#/contribute">See it in My submissions →</a>`));
         form.reset();
-        state.subs = null;
       }
     } catch (err) {
       mount(out, notice("bad", html`<b>Not sent.</b> ${err.message}`));
@@ -825,7 +676,6 @@ async function previewBulk(c, file) {
       const r = await api(`/api/pools/${encodeURIComponent(c.id)}/bulk/send`, { method: "POST", body: { method: $("#bulk-method").value, rows: send } });
       const extra = [r.duplicates ? `${r.duplicates} already in the pool, so not added.` : "", r.skipped ? `${r.skipped} didn't pass the check, so not sent.` : ""].filter(Boolean).join(" ");
       mount($("#bulk-out"), html`${notice(r.sent ? "ok" : "warn", html`<b>${r.sent ? `${r.sent} item${r.sent === 1 ? "" : "s"} sent ✓` : "Nothing was sent."}</b> ${extra} <a href="#/contribute">See them in My submissions →</a>`)}${r.problem ? html`<div style="margin-top:8px">${notice("warn", r.problem)}</div>` : ""}`);
-      state.subs = null;
       sent = r.sent > 0;
     } catch (e) {
       mount($("#bulk-out"), notice("bad", e.message));
@@ -900,27 +750,6 @@ function howReviewing() {
     </ol></div>`;
 }
 
-function rankCards(r) {
-  const pct = r.nextRank ? Math.round((100 * r.auditsCompleted) / Math.max(1, r.auditsCompleted + r.nextRank.toGo)) : 100;
-  const stat = (label, value, tone) => html`<div class="stat ${tone ? `stat-${tone}` : ""}"><div class="micro">${label}</div><b>${value}</b></div>`;
-  return html`
-    <div class="card karma-card">
-      <div class="karma-icon">${icon("shield")}</div>
-      <div><div class="karma-num"><b>${r.rank || "Observer"}</b><span class="mono small muted">validator rank</span></div>
-        <div class="mono small muted" style="margin-top:6px">${fmt(r.auditsCompleted)} audits completed</div></div>
-      <div class="karma-next">
-        <div class="row"><span class="mono small muted">${r.nextRank ? `next rank · ${r.nextRank.name}` : "top rank"}</span><span class="mono small">${r.nextRank ? `${fmt(r.nextRank.toGo)} to go` : ""}</span></div>
-        <div class="progress"><span style="width:${pct}%"></span></div>
-      </div>
-    </div>
-    <div class="card stats">
-      ${stat("claimed slots", `${r.active} / ${r.maxConcurrent}`, r.active >= r.maxConcurrent ? "warn" : "")}
-      ${stat("false flag rate", r.falseFlagRate != null ? `${r.falseFlagRate}%` : "—")}
-      ${stat("missed deadlines", fmt(r.missedDeadlines))}
-      ${stat("karma", fmt(state.me.karma || 0), "ok")}
-    </div>`;
-}
-
 function auditRow(a, claimable) {
   const pct = a.items ? Math.min(100, Math.round((100 * a.decided) / a.items)) : 0;
   const due = a.deadline && a.status !== "completed" ? dueText(a.deadline) : "";
@@ -945,71 +774,9 @@ async function claimAudit(id, button) {
   }
 }
 
-async function pageValidate() {
-  const live = ticket();
-  const page = $("#page");
-  const me = state.me;
-  if (!me) { mount(page, html`${reviewHead()}${reviewSignIn()}${howReviewing()}`); return; }
-  if (me.step !== "ready") { mount(page, html`${reviewHead()}${setupCard(me)}`); wireSetup(); return; }
-  if (!me.canReview) {
-    mount(page, html`${reviewHead()}<div class="card setup-card"><h2>Allow reviewing</h2><p>You signed in before the Space could review for you. Sign out, sign in again, and keep <b>validate</b> ticked.</p><button class="btn" data-action="sign-out">sign out</button></div>`);
-    return;
-  }
-  const r = me.reviewer;
-  const full = r.active >= r.maxConcurrent;
-  mount(page, html`${reviewHead()}
-    <div class="stack">${rankCards(r)}</div>
-    <h2 class="section">Your audits</h2>
-    <p class="section-sub">Audits you've claimed. Each one is yours for 24 hours from the claim.</p>
-    <div id="my-audits"><div class="skeleton"></div></div>
-    <h2 class="section">Open audits</h2>
-    <p class="section-sub">Claim one to see its items. Audits with your own work are never shown to you.</p>
-    ${full ? html`<div style="margin-bottom:12px">${notice("warn", `You're holding ${r.active} of ${r.maxConcurrent} audits, the most your rank allows. Finish one to claim another.`)}</div>` : ""}
-    <div class="filters"><label class="search">${icon("search")}<input class="input" id="audit-q" placeholder="Search by pool…" aria-label="Search audits"></label><span></span><span class="count" id="audit-count"></span></div>
-    <div id="open-audits"><div class="skeleton"></div></div>
-    <h2 class="section">Completed</h2>
-    <div id="done-audits"><div class="skeleton"></div></div>`);
-
-  const mine = async () => {
-    try {
-      const [held, late] = await Promise.all([api("/api/audits/mine?status=claimed"), api("/api/audits/mine?status=overdue_review")]);
-      if (!live()) return;
-      const rows = [...late.audits, ...held.audits];
-      mount($("#my-audits"), rows.length ? html`<div class="rows">${rows.map((a) => auditRow(a, false))}</div>` : html`<div class="card empty">None yet. Claim an open audit below.</div>`);
-    } catch (e) { if (live()) mount($("#my-audits"), notice("warn", e.message)); }
-  };
-  let latest = 0;
-  const open = async () => {
-    const seq = ++latest;
-    const q = $("#audit-q").value.trim();
-    try {
-      const data = await api(`/api/audits?q=${encodeURIComponent(q)}`);
-      if (!live() || seq !== latest) return;
-      $("#audit-count").textContent = `${data.total} open`;
-      const hidden = data.hidden ? html`<p class="hint" style="margin:10px 2px 0">${data.hidden} more hold your own work, so they're hidden from you.</p>` : "";
-      mount($("#open-audits"), data.audits.length
-        ? html`<div class="rows">${data.audits.map((a) => auditRow(a, true))}</div>${hidden}`
-        : html`<div class="card empty">No audits are open right now. New ones open as pools fill up.</div>${hidden}`);
-      $$("[data-claim]").forEach((b) => {
-        b.disabled = full;
-        b.addEventListener("click", () => claimAudit(b.dataset.claim, b));
-      });
-    } catch (e) { if (live() && seq === latest) mount($("#open-audits"), notice("warn", e.message)); }
-  };
-  const done = async () => {
-    try {
-      const data = await api("/api/audits/mine?status=completed");
-      if (!live()) return;
-      mount($("#done-audits"), data.audits.length
-        ? html`<div class="rows">${data.audits.slice(0, 10).map((a) => auditRow(a, false))}</div>`
-        : html`<div class="card empty">Audits you finish show up here.</div>`);
-    } catch (e) { if (live()) mount($("#done-audits"), notice("warn", e.message)); }
-  };
-  let timer;
-  $("#audit-q").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(open, 300); });
-  mine();
-  open();
-  done();
+function pageValidate() {
+  ticket(); // a page still loading stops drawing
+  mount($("#page"), html`${reviewHead()}${reviewSignIn()}${howReviewing()}`);
 }
 
 async function pageAudit(id) {
@@ -1226,7 +993,6 @@ async function pageSponsor() {
     </ol></div>
     <h2 class="section">Already a sponsor?</h2>
     <p class="section-sub">Open your pool's page here to see the items people submitted, with their checks, and dispute an accepted one.</p>
-    ${state.me && !state.me.canSponsor ? html`<div style="margin-bottom:12px">${notice("warn", html`To see your pools here, sign out and in again, keeping <b>sponsor</b> ticked.`)}</div>` : ""}
     <div class="rows">
       <a class="card pool-row" href="${app}/sponsor/" target="_blank" rel="noopener"><div class="head"><span class="pool-title">Your requests and pools</span></div><div class="mono small muted">Track requests, review items in your pools and close a pool, on databounty.io.</div><span class="row-arrow">${icon("external")}</span></a>
     </div>`);

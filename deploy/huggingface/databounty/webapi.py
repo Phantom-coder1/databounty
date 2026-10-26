@@ -12,6 +12,9 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +22,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
 import account
+import console
 import contribute
 import databounty as db
 import items as checks
@@ -407,9 +411,12 @@ async def bulk_send(pool_id: str, request: Request):
 
 
 @router.get("/submissions")
-def submissions(request: Request):
+def submissions(request: Request, pool: str = ""):
     _, session = _session(request)
-    data = _call(session, "list_my_submissions", {"limit": 50}) or {}
+    arguments: dict[str, Any] = {"limit": 50}
+    if pool.strip():
+        arguments["bountyId"] = pool.strip()  # one pool's items, for its page
+    data = _call(session, "list_my_submissions", arguments) or {}
     rows = [contribute.submission_row(item) for item in data.get("items") or []]
     return _ok({"items": rows, "total": data.get("total") if isinstance(data.get("total"), int) else len(rows)})
 
@@ -534,3 +541,239 @@ async def sponsor_dispute(submission_id: str, request: Request):
         raise ApiError(400, problem)
     _sponsor_call(session, "dispute_accepted_submission", {"submissionId": submission_id, **arguments})
     return _ok({"ok": True})
+
+
+# --- The signed-in console ------------------------------------------------------------------------------
+# Each console page after login, from DataBounty's MCP tools as the person. What no tool offers (weekly
+# validator charts, held karma, notification channels, API keys, profile edits) links to databounty.io.
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _pages(session: account.Session, name: str, arguments: dict[str, Any], key: str, *, older_than: str = "", cap: int = 5) -> list[dict[str, Any]]:
+    """Every row of a cursor-paged tool, newest first, stopping at `older_than` or after `cap` pages."""
+    rows: list[dict[str, Any]] = []
+    cursor = None
+    for _ in range(cap):
+        page = _call(session, name, {**arguments, **({"cursor": cursor} if cursor else {})}) or {}
+        items = [row for row in page.get(key) or [] if isinstance(row, dict)]
+        rows.extend(items)
+        cursor = page.get("nextCursor")
+        if not cursor or page.get("hasMore") is False or (older_than and items and str(items[-1].get("createdAt") or "") < older_than):
+            break
+    return rows
+
+
+def _together(session: account.Session, calls: dict[str, tuple[str, dict[str, Any]]]) -> dict[str, Any]:
+    """Several tool calls at once (the session refreshes its token under its own lock)."""
+    with ThreadPoolExecutor(max_workers=min(4, len(calls))) as pool:
+        futures = {label: pool.submit(_call, session, name, args) for label, (name, args) in calls.items()}
+        return {label: future.result() or {} for label, future in futures.items()}
+
+
+@router.get("/console/shell")
+def console_shell(request: Request):
+    """The sidebar's karma card and unread count."""
+    _, session = _session(request)
+    got = _together(session, {"karma": ("get_karma_details", {"limit": 1}), "notes": ("list_notifications", {"limit": 1})})
+    return _ok({**console.tier_view(got["karma"]), "unread": got["notes"].get("unreadCount") or 0})
+
+
+@router.get("/console/analytics")
+def console_analytics(request: Request, weeks: int = console.WEEKS):
+    _, session = _session(request)
+    weeks = weeks if weeks in (4, 12, 26, 52) else console.WEEKS
+    now = _now()
+    start = console.week_range(weeks, now)[0]
+    since = datetime(start.year, start.month, start.day, tzinfo=timezone.utc).isoformat()
+    subs = _pages(session, "list_my_submissions", {"limit": 100}, "items", older_than=since)
+    events = _pages(session, "get_karma_details", {"limit": 100, "since": since}, "events")
+    return _ok(console.analytics_view(subs, events, weeks, now))
+
+
+@router.get("/console/contributor")
+def console_contributor(request: Request):
+    _, session = _session(request)
+    got = _together(session, {"who": ("whoami", {}), "work": ("get_my_work_progress", {}), "karma": ("get_karma_details", {"limit": 1})})
+    return _ok({"karma": console.tier_view(got["karma"]), "rank": console.rank_card((got["who"].get("ranks") or {}).get("contributor")),
+                "funnel": got["work"].get("contributor") or {}})
+
+
+@router.get("/console/my-pools")
+def console_my_pools(request: Request, filter: str = "all", q: str = ""):
+    """The person's submissions, one row per pool, like the console's My submissions."""
+    _, session = _session(request)
+    subs = _pages(session, "list_my_submissions", {"limit": 100}, "items")
+    rows = console.pool_groups(subs)
+    counts = {f: sum(1 for r in rows if f in r["filters"]) for f in console.POOL_FILTERS}
+    needle = " ".join(q.split()).lower()
+    wanted = filter if filter in console.POOL_FILTERS else "all"
+    shown = [r for r in rows if wanted in r["filters"] and (not needle or needle in r["pool"].lower())]
+    return _ok({"pools": shown, "counts": counts, "submitted": len(subs)})
+
+
+@router.get("/console/validator")
+def console_validator(request: Request):
+    _, session = _session(request)
+    got = _together(session, {"who": ("whoami", {}), "work": ("get_my_work_progress", {}), "karma": ("get_karma_details", {"limit": 1})})
+    ranks = (got["who"].get("ranks") or {}).get("validator") or {}
+    return _ok({"karma": console.tier_view(got["karma"]), "reviewer": validate.rank_view(got["who"]), "work": got["work"].get("validator") or {},
+                "flags": {"decided": ranks.get("decidedFlags") or 0, "dismissed": ranks.get("dismissedFlags") or 0}})
+
+
+@router.get("/console/karma")
+def console_karma(request: Request, cursor: str = "", kind: str = ""):
+    _, session = _session(request)
+    args: dict[str, Any] = {"limit": 20}
+    if cursor:
+        args["cursor"] = cursor
+    if kind in console.KARMA_KINDS:
+        args["eventType"] = kind
+    got = _together(session, {"karma": ("get_karma_details", args), "who": ("whoami", {})})
+    tier = console.tier_view(got["karma"])
+    try:
+        ladder = db.tiers()
+    except db.UpstreamError:
+        ladder = []
+    return _ok({
+        "karma": tier,
+        "tiers": console.tiers_view(ladder, tier),
+        "badges": [b.get("label") for b in got["who"].get("badges") or [] if isinstance(b, dict) and b.get("label")],
+        "breakdown": got["karma"].get("breakdown") or {},
+        "events": [console.karma_event_row(e) for e in got["karma"].get("events") or [] if isinstance(e, dict)],
+        "nextCursor": got["karma"].get("nextCursor") if got["karma"].get("hasMore") else None,
+        "eventCount": got["karma"].get("eventCount") or 0,
+    })
+
+
+@router.get("/console/profile")
+def console_profile(request: Request):
+    _, session = _session(request)
+    got = _together(session, {"who": ("whoami", {}), "pref": ("get_attribution_preference", {})})
+    who, pref = got["who"], got["pref"]
+    ranks = who.get("ranks") or {}
+    handle = who.get("handle") or ""
+    return _ok({
+        "displayName": who.get("displayName") or "", "handle": handle, "email": who.get("email") or "",
+        "publicUrl": f"{db.SITE_URL}/{handle}" if handle else "", "profilePublic": bool(pref.get("profilePublic")),
+        "prefs": pref.get("publicProfilePrefs") or {}, "creditOptOut": bool(pref.get("optOut")),
+        "contributor": ranks.get("contributor") or {}, "validator": validate.rank_view(who),
+        "badges": [b.get("label") for b in who.get("badges") or [] if isinstance(b, dict) and b.get("label")],
+        "settingsUrl": f"{db.APP_URL}/profile/",
+    })
+
+
+@router.get("/console/notifications")
+def console_notifications(request: Request, unread: bool = False, cursor: str = ""):
+    _, session = _session(request)
+    args: dict[str, Any] = {"limit": 30}
+    if unread:
+        args["unreadOnly"] = True
+    if cursor:
+        args["cursor"] = cursor
+    data = _call(session, "list_notifications", args) or {}
+    now = _now()
+    return _ok({
+        "items": [console.notification_view(n, now, db.APP_URL) for n in data.get("items") or [] if isinstance(n, dict)],
+        "unread": data.get("unreadCount") or 0,
+        "nextCursor": data.get("nextCursor") if data.get("hasMore") else None,
+        "channelsUrl": f"{db.APP_URL}/notifications/",
+    })
+
+
+@router.post("/console/notifications/read")
+async def console_notifications_read(request: Request):
+    _, session = _session(request)
+    note = str((await _json(request)).get("id") or "")
+    _call(session, "mark_notifications_read", {"notificationId": note} if note else {})
+    return _ok({"ok": True})
+
+
+@router.get("/console/issues")
+def console_issues(request: Request, status: str = "", q: str = "", cursor: str = ""):
+    _, session = _session(request)
+    args: dict[str, Any] = {"limit": 20}
+    if status in console.ISSUE_STATUS:
+        args["status"] = status
+    needle = " ".join(q.split())[:80]
+    if len(needle) >= 2:
+        args["q"] = needle
+    if cursor:
+        args["cursor"] = cursor
+    data = _call(session, "list_my_issues", args) or {}
+    now = _now()
+    rows = [console.issue_row(i, now) for i in data.get("items") or [] if isinstance(i, dict)]
+    return _ok({"items": rows, "count": data.get("issueCount") if isinstance(data.get("issueCount"), int) else len(rows),
+                "waiting": sum(1 for r in rows if r["needsAnswer"]), "nextCursor": data.get("nextCursor") if data.get("hasMore") else None})
+
+
+@router.get("/console/issues/{issue_id}")
+def console_issue(issue_id: str, request: Request):
+    _, session = _session(request)
+    return _ok(console.issue_view(_call(session, "get_issue", {"issueId": issue_id}) or {}, _now()))
+
+
+@router.post("/console/issues/{issue_id}/reply")
+async def console_issue_reply(issue_id: str, request: Request):
+    _, session = _session(request)
+    body = str((await _json(request)).get("body") or "").strip()
+    if not body:
+        raise ApiError(400, "Write a reply first.")
+    if len(body) > 2000:
+        raise ApiError(400, "Keep the reply under 2000 characters.")
+    _call(session, "reply_to_issue", {"issueId": issue_id, "body": body})
+    return _ok(console.issue_view(_call(session, "get_issue", {"issueId": issue_id}) or {}, _now()))
+
+
+# Which open pools this person requested. DataBounty has no "my pools" tool and its public pool data
+# doesn't name the requester, so the Space asks get_sponsor_submission_evidence about each open pool
+# (it answers only the requester) and keeps the answer for a few minutes.
+_SPONSORED: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+SPONSORED_TTL = 300.0
+
+
+@router.get("/console/sponsor")
+def console_sponsor(request: Request, fresh: bool = False):
+    session_id, session = _session(request)
+    links = {"requestUrl": f"{db.APP_URL}/sponsor/create/", "requestsUrl": f"{db.APP_URL}/sponsor/"}
+    if "sponsor" not in session.scope.split():
+        return _ok({"pools": [], "needsScope": True, **links})
+    key = account._digest(session_id)
+    hit = _SPONSORED.get(key)
+    if hit and not fresh and time.monotonic() - hit[0] < SPONSORED_TTL:
+        return _ok({"pools": hit[1], **links})
+    open_pools = _public(lambda: db.open_pools())
+
+    def check(pool: dict[str, Any]) -> dict[str, Any] | str:
+        """The pool with its item count when it's this person's, "theirs" when it isn't, "unknown" when
+        DataBounty didn't say (a timeout or rate limit, which mustn't read as "not yours")."""
+        try:
+            data = account.call_tool(session, "get_sponsor_submission_evidence", {"bountyId": pool["id"], "limit": 1}) or {}
+        except account.ToolError as exc:
+            return "theirs" if "owner" in str(exc).lower() or "forbidden" in str(exc).lower() else "unknown"
+        return {**pool, "items": data.get("total") if isinstance(data.get("total"), int) else 0}
+
+    try:
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            answers = list(executor.map(check, open_pools))
+    except account.NotSignedIn as exc:
+        raise ApiError(401, "Your sign-in ended. Sign in again to continue.") from exc
+    mine = [row for row in answers if isinstance(row, dict)]
+    if "unknown" in answers:
+        return _ok({"pools": mine, "partial": True, **links})
+    now = time.monotonic()
+    for stale in [k for k, (at, _) in list(_SPONSORED.items()) if now - at >= SPONSORED_TTL]:
+        _SPONSORED.pop(stale, None)
+    _SPONSORED[key] = (now, mine)
+    return _ok({"pools": mine, **links})
+
+
+@router.get("/console/developers")
+def console_developers():
+    surface = _public(db.developer_surface)
+    return _ok({
+        "mcpUrl": surface.get("mcpRemoteUrl") or db.MCP_URL, "rateLimit": surface.get("rateLimitPerMinute"),
+        "toolCount": len(surface.get("mcpTools") or []), "keysUrl": f"{db.APP_URL}/developers/",
+    })

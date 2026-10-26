@@ -256,13 +256,21 @@ def open_pools(query: str = "", domain: str = "", difficulty: str = "") -> list[
     "Open" is whatever the platform's own open-pools endpoint lists; the catalog
     supplies the descriptive fields that endpoint leaves out.
     """
-    open_ids = {row.get("id") for row in _all_pages("/v1/community/pools", "pools")}
+    open_rows = {row.get("id"): row for row in _all_pages("/v1/community/pools", "pools")}
     needle = query.strip().lower()
     pools = []
     for row in _catalog():
-        if row.get("id") not in open_ids:
+        if row.get("id") not in open_rows:
             continue
         pool = _programme(row)
+        # The open-pools endpoint carries what the console's pool cards show: capacity, final
+        # acceptances and the pool's whole karma budget.
+        live = open_rows[row.get("id")] or {}
+        summary, pricing = live.get("poolSummary") or {}, live.get("karmaPricing") or {}
+        pool.update(capacity_reserved=_int(summary.get("capacityReserved")), final_accepted=_int(summary.get("finalAccepted")),
+                    karma_total=pricing.get("contributorTotal"))
+        if isinstance(pricing.get("contributorPerItem"), int) and pricing["contributorPerItem"] > 0:
+            pool["karma_per_accepted_item"] = pricing["contributorPerItem"]
         if domain and pool["domain"] != domain:
             continue
         if difficulty and pool["difficulty"] != difficulty:
@@ -465,6 +473,11 @@ def contributor(handle: str) -> dict[str, Any] | None:
 
 
 # --- Agents -------------------------------------------------------------------------
+
+
+def developer_surface() -> dict[str, Any]:
+    """DataBounty's public developer facts: its MCP URL, rate limit and live tool list."""
+    return _get("/v1/meta/developer-surface") or {}
 
 
 def platform_mcp_tools() -> list[dict[str, str]]:
