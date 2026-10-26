@@ -14,6 +14,7 @@ Object.assign(ICONS, {
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   triangle: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
   zap: '<path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/>',
+  layers: '<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/>',
 });
 
 const CONSOLE_NAV = [
@@ -21,6 +22,7 @@ const CONSOLE_NAV = [
   ["#/sponsor", "database", "Sponsor"],
   ["#/contributor", "code", "Contributor"],
   ["#/validator", "shield", "Validator"],
+  ["#/datasets", "layers", "Datasets"], // the Space's own: published datasets on the Hub
   ["#/karma", "sparkles", "Karma"],
   ["#/profile", "award", "Profile"],
   ["#/developers", "code", "API & MCP"],
@@ -129,6 +131,7 @@ function cNav() {
 
 function renderConsoleShell() {
   if (!state.me) return;
+  const drawerOpen = Boolean($(".c-drawer:not([hidden])")); // a redraw (the karma card arriving) keeps the phone menu open
   let collapsed = false;
   try { collapsed = localStorage.getItem(COLLAPSE_KEY) === "1"; } catch { /* private window */ }
   const brand = html`<a class="c-logo" href="#/analytics"><img src="/static/logo.svg" alt=""><span>DATA<b>/</b>BOUNTY</span></a>`;
@@ -144,7 +147,7 @@ function renderConsoleShell() {
       ${brand}
       <a class="c-icon-btn c-bell" href="#/notifications" aria-label="Notifications">${icon("bell")}${cShell.unread ? html`<span class="c-dot"></span>` : ""}</a>
     </header>
-    <div class="c-drawer" hidden>
+    <div class="c-drawer" ${drawerOpen ? "" : raw("hidden")}>
       <div class="c-scrim" data-c="close"></div>
       <div class="c-drawer-panel" role="dialog" aria-modal="true" aria-label="Navigation menu">
         <div class="c-brand">${brand}<button class="c-icon-btn" data-c="close" aria-label="Close menu">${icon("x")}</button></div>
