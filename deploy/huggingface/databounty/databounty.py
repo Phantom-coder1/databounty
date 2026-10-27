@@ -71,7 +71,7 @@ _http = httpx.Client(
     timeout=httpx.Timeout(15.0, connect=5.0),
     headers={
         "Accept": "application/json",
-        "User-Agent": "databounty-space/1.0 (+https://huggingface.co/spaces/databounty-io/DataBounty)",
+        "User-Agent": "databounty-space/1.0 (+https://huggingface.co/spaces/sthanika-ai/DataBounty)",
     },
 )
 _hub = HfApi()

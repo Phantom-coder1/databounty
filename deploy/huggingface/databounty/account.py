@@ -54,7 +54,7 @@ import httpx
 DATABOUNTY_MCP_URL = os.environ.get("DATABOUNTY_MCP_URL", "https://console.databounty.io/mcp").rstrip("/")
 # Only for an upload URL DataBounty returns as a path (local storage); everything else goes through MCP.
 DATABOUNTY_API_URL = os.environ.get("DATABOUNTY_API_URL", "https://api.databounty.io").rstrip("/")
-SPACE_HOST = os.environ.get("SPACE_HOST", "databounty-io-databounty.hf.space")
+SPACE_HOST = os.environ.get("SPACE_HOST", "sthanika-ai-databounty.hf.space")
 SPACE_URL = os.environ.get("SPACE_PUBLIC_URL", f"https://{SPACE_HOST}").rstrip("/")
 
 # DataBounty fetches this URL to learn who the Space is. DATABOUNTY_CLIENT_ID overrides it only for a
@@ -76,7 +76,7 @@ REFRESH_MARGIN_SECONDS = 60
 CLAIM_TTL_SECONDS = 5 * 60
 _NONCE_HASH = re.compile(r"^[0-9a-f]{64}$")
 TIMEOUT = httpx.Timeout(20.0, connect=10.0)
-USER_AGENT = "databounty-space/1.0 (+https://huggingface.co/spaces/databounty-io/DataBounty)"
+USER_AGENT = "databounty-space/1.0 (+https://huggingface.co/spaces/sthanika-ai/DataBounty)"
 
 # Secure cookies everywhere except a local run over plain http.
 COOKIE_SECURE = SPACE_URL.startswith("https://")
@@ -108,7 +108,7 @@ def client_metadata() -> dict[str, Any]:
     return {
         "client_id": CLIENT_ID,
         "client_name": "DataBounty on Hugging Face",
-        "client_uri": "https://huggingface.co/spaces/databounty-io/DataBounty",
+        "client_uri": "https://huggingface.co/spaces/sthanika-ai/DataBounty",
         "redirect_uris": [REDIRECT_URI],
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],

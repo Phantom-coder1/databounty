@@ -1,10 +1,14 @@
 # Hugging Face Spaces
 
-Spaces that DataBounty publishes under the [databounty-io](https://huggingface.co/databounty-io) organisation.
-Each subfolder is the complete contents of one Space repository, including its Space card (`README.md` with the
-Hub's YAML front matter).
+Spaces that DataBounty publishes on the Hub. The DataBounty Space lives under the
+[sthanika-ai](https://huggingface.co/sthanika-ai) organisation; the datasets it publishes stay under
+[databounty-io](https://huggingface.co/databounty-io). Each subfolder is the complete contents of one Space
+repository, including its Space card (`README.md` with the Hub's YAML front matter).
 
-## `databounty/` → `databounty-io/DataBounty`
+## `databounty/` → `sthanika-ai/DataBounty`
+
+It moved here from `databounty-io/DataBounty` on 2026-10-27; that Space is now a card that links here.
+
 
 A Space that shows DataBounty's live pools, published datasets, karma leaderboard and public profiles, and lets a
 person sign in to DataBounty to add items to open pools, review other people's, and see the items in pools they
@@ -36,12 +40,12 @@ How signing in works:
 - Tool calls use the stateless MCP protocol (`2026-07-28`) against `https://console.databounty.io/mcp`, so there is
   no MCP session to expire.
 
-**Deploy** (from the repository root, logged in with a token that can write to `databounty-io`):
+**Deploy** (from the repository root, logged in with a token that can write to `sthanika-ai`):
 
 ```bash
-hf upload databounty-io/DataBounty deploy/huggingface/databounty . \
+hf upload sthanika-ai/DataBounty deploy/huggingface/databounty . \
   --repo-type space --exclude "__pycache__/**" --exclude "**/__pycache__/**" --exclude ".gradio/**"
-hf spaces logs databounty-io/DataBounty --build --follow
+hf spaces logs sthanika-ai/DataBounty --build --follow
 ```
 
 `--repo-type space` is required: without it `hf upload` targets, and silently creates, a model repo. Keep both
