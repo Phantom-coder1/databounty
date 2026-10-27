@@ -363,7 +363,7 @@ function signInCard(title = "Sign in to contribute", text = raw("Earn <b>karma</
     <div><h2>${title}</h2><p>${text}</p></div>
     <div class="signin-actions">
       <button class="btn btn-primary" data-action="sign-in">sign in with DataBounty ${icon("arrow")}</button>
-      <span class="note" data-signin-note>${embedded() ? "Opens a small sign-in window." : "You'll come straight back here."}</span>
+      <span class="note" data-signin-note>${embedded() ? "" : "You'll come straight back here."}</span>
     </div>
   </div>`;
 }
