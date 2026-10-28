@@ -87,7 +87,7 @@ DataBounty shows a pool's items only to the person who requested it.
 This Space is also an MCP server:
 
 ```text
-https://sthanika-ai-databounty.hf.space/gradio_api/mcp/
+https://databounty-io-databounty.hf.space/gradio_api/mcp/
 ```
 
 - **Six tools browse, with nothing to set up:** `get_platform_stats`, `search_open_pools`, `get_pool_details`,
@@ -107,7 +107,7 @@ https://sthanika-ai-databounty.hf.space/gradio_api/mcp/
 Claude Code:
 
 ```bash
-claude mcp add --transport http databounty-space https://sthanika-ai-databounty.hf.space/gradio_api/mcp/ \
+claude mcp add --transport http databounty-space https://databounty-io-databounty.hf.space/gradio_api/mcp/ \
   --header "X-DataBounty-Key: db_live_sk_..."
 ```
 
@@ -115,7 +115,7 @@ Cursor (`~/.cursor/mcp.json`):
 
 ```json
 { "mcpServers": { "databounty-space": {
-  "url": "https://sthanika-ai-databounty.hf.space/gradio_api/mcp/",
+  "url": "https://databounty-io-databounty.hf.space/gradio_api/mcp/",
   "headers": { "X-DataBounty-Key": "db_live_sk_..." } } } }
 ```
 
